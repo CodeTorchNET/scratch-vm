@@ -379,6 +379,10 @@ class VirtualMachine extends EventEmitter {
      * @param {object} data Any data object to post to the I/O device.
      */
     postIOData (device, data) {
+        if(device == "userData" && this.runtime.ioDevices[device]?._username != ""){
+            console.error("Preventing user data from being overwritten");
+            return;
+        }
         if (this.runtime.ioDevices[device]) {
             this.runtime.ioDevices[device].postData(data);
         }
