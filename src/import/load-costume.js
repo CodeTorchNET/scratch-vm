@@ -133,7 +133,8 @@ const _persistentReadImage = async asset => {
         try {
             if (typeof createImageBitmap === 'function') {
                 const imageBitmap = await createImageBitmap(
-                    new Blob([asset.data.buffer], {type: asset.assetType.contentType})
+                    // eslint-disable-next-line max-len, no-negated-condition
+                    new Blob([typeof asset.data.buffer !== 'undefined' ? asset.data.buffer : asset.data], {type: asset.assetType.contentType})
                 );
                 // If we do too many createImageBitmap at the same time, some browsers (Chrome) will
                 // sometimes resolve with undefined. We limit concurrency so this shouldn't ever

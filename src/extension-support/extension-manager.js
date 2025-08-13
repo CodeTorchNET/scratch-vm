@@ -196,14 +196,25 @@ class ExtensionManager {
         }
     }
 
+    _CollaborationEmitTrigger (extensionURL){
+        const triggerData = {
+            triggerId: 'extensionLoaded',
+            data: {
+                extensionURL
+            }
+        };
+            // Dispatch the custom event for the addon to pick up
+        window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+    }
     /**
      * Load an extension by URL or internal extension ID
      * @param {string} extensionURL - the URL for the extension to load OR the ID of an internal extension
      * @returns {Promise} resolved once the extension is loaded and initialized or rejected on failure
      */
-    async loadExtensionURL (extensionURL) {
+    async loadExtensionURL (extensionURL, emit = true) {
         if (this.isBuiltinExtension(extensionURL)) {
-            this.loadExtensionIdSync(extensionURL);
+            if (emit) this._CollaborationEmitTrigger(extensionURL);
+            this.loadExtensionIdSync(extensionURL, false);
             return;
         }
 
@@ -216,6 +227,9 @@ class ExtensionManager {
             throw new Error(`Invalid extension URL: ${extensionURL}`);
         }
 
+        if (emit) {
+            this._CollaborationEmitTrigger(extensionURL);
+        }
         this.runtime.setExternalCommunicationMethod('customExtensions', true);
 
         this.loadingAsyncExtensions++;

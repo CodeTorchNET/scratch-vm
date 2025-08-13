@@ -380,8 +380,8 @@ class VirtualMachine extends EventEmitter {
      * @param {object} data Any data object to post to the I/O device.
      */
     postIOData (device, data) {
-        if(device == "userData" && this.runtime.ioDevices[device]?._username != ""){
-            console.error("Preventing user data from being overwritten");
+        if (device === 'userData' && this.runtime.ioDevices[device]?._username !== ''){
+            console.error('Preventing user data from being overwritten');
             return;
         }
         if (this.runtime.ioDevices[device]) {
@@ -813,7 +813,8 @@ class VirtualMachine extends EventEmitter {
      * @param {string | object} input A json string, object, or ArrayBuffer representing the project to load.
      * @return {!Promise} Promise that resolves after targets are installed.
      */
-    addSprite (input) {
+    addSprite (input, emit = true) {
+        const originalInput = input;
         const errorPrefix = 'Sprite Upload Error:';
         if (typeof input === 'object' && !(input instanceof ArrayBuffer) &&
           !ArrayBuffer.isView(input)) {
@@ -836,6 +837,16 @@ class VirtualMachine extends EventEmitter {
                 resolve(res);
             });
         });
+        if (emit === true) {
+            const triggerData = {
+                triggerId: 'spriteAdded',
+                data: {
+                    spriteData: originalInput
+                }
+            };
+                // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
 
         return validationPromise
             .then(validatedInput => {
@@ -903,10 +914,23 @@ class VirtualMachine extends EventEmitter {
      * @param {string} optVersion - if this is 2, load costume as sb2, otherwise load costume as sb3.
      * @returns {?Promise} - a promise that resolves when the costume has been added
      */
-    addCostume (md5ext, costumeObject, optTargetId, optVersion) {
+    addCostume (md5ext, costumeObject, optTargetId, optVersion, emit = true) {
         const target = optTargetId ? this.runtime.getTargetById(optTargetId) :
             this.editingTarget;
         if (target) {
+            if (emit){
+                const triggerData = {
+                    triggerId: 'costumeAdded',
+                    data: {
+                        md5ext,
+                        costumeObject: structuredClone(costumeObject),
+                        targetId: target.getName(),
+                        optVersion
+                    }
+                };
+                // Dispatch the custom event for the addon to pick up
+                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+            }
             return loadCostume(md5ext, costumeObject, this.runtime, optVersion).then(() => {
                 target.addCostume(costumeObject);
                 target.setCostume(
@@ -941,14 +965,27 @@ class VirtualMachine extends EventEmitter {
     /**
      * Duplicate the costume at the given index. Add it at that index + 1.
      * @param {!int} costumeIndex Index of costume to duplicate
+     * @param {Target} edittingTarget - the target to duplicate the costume on (only used by the collaboration addon)
+     * @param {boolean} emit - whether to emit the costumeDuplicated event (only used by the collaboration addon)
      * @returns {?Promise} - a promise that resolves when the costume has been decoded and added
      */
-    duplicateCostume (costumeIndex) {
-        const originalCostume = this.editingTarget.getCostumes()[costumeIndex];
+    duplicateCostume (costumeIndex, edittingTarget = this.editingTarget, emit = true) {
+        if (emit){
+            const triggerData = {
+                triggerId: 'costumeDuplicated',
+                data: {
+                    costumeIndex,
+                    targetId: this.editingTarget.getName()
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
+        const originalCostume = edittingTarget.getCostumes()[costumeIndex];
         const clone = Object.assign({}, originalCostume);
         const md5ext = `${clone.assetId}.${clone.dataFormat}`;
         return loadCostume(md5ext, clone, this.runtime).then(() => {
-            this.editingTarget.addCostume(clone, costumeIndex + 1);
+            edittingTarget.addCostume(clone, costumeIndex + 1);
             this.editingTarget.setCostume(costumeIndex + 1);
             this.emitTargetsUpdate();
         });
@@ -959,11 +996,22 @@ class VirtualMachine extends EventEmitter {
      * @param {!int} soundIndex Index of sound to duplicate
      * @returns {?Promise} - a promise that resolves when the sound has been decoded and added
      */
-    duplicateSound (soundIndex) {
-        const originalSound = this.editingTarget.getSounds()[soundIndex];
+    duplicateSound (soundIndex, edittingTarget = this.editingTarget, emit = true) {
+        if (emit){
+            const triggerData = {
+                triggerId: 'soundDuplicated',
+                data: {
+                    soundIndex,
+                    targetId: this.editingTarget.getName()
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
+        const originalSound = edittingTarget.getSounds()[soundIndex];
         const clone = Object.assign({}, originalSound);
-        return loadSound(clone, this.runtime, this.editingTarget.sprite.soundBank).then(() => {
-            this.editingTarget.addSound(clone, soundIndex + 1);
+        return loadSound(clone, this.runtime, edittingTarget.sprite.soundBank).then(() => {
+            edittingTarget.addSound(clone, soundIndex + 1);
             this.emitTargetsUpdate();
         });
     }
@@ -974,6 +1022,16 @@ class VirtualMachine extends EventEmitter {
      * @param {string} newName - the desired new name of the costume (will be modified if already in use).
      */
     renameCostume (costumeIndex, newName) {
+        const triggerData = {
+            triggerId: 'costumeRenamed',
+            data: {
+                costumeIndex,
+                newName,
+                targetId: this.editingTarget.getName()
+            }
+        };
+        // Dispatch the custom event for the addon to pick up
+        window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
         this.editingTarget.renameCostume(costumeIndex, newName);
         this.emitTargetsUpdate();
     }
@@ -989,6 +1047,15 @@ class VirtualMachine extends EventEmitter {
         if (deletedCostume) {
             const target = this.editingTarget;
             this.runtime.emitProjectChanged();
+            const triggerData = {
+                triggerId: 'costumeDeleted',
+                data: {
+                    costumeIndex,
+                    targetId: this.editingTarget.getName()
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
             return () => {
                 target.addCostume(deletedCostume);
                 this.emitTargetsUpdate();
@@ -1003,10 +1070,21 @@ class VirtualMachine extends EventEmitter {
      * @param {string} optTargetId - the id of the target to add to, if not the editing target.
      * @returns {?Promise} - a promise that resolves when the sound has been decoded and added
      */
-    addSound (soundObject, optTargetId) {
+    addSound (soundObject, optTargetId, emit = true) {
         const target = optTargetId ? this.runtime.getTargetById(optTargetId) :
             this.editingTarget;
         if (target) {
+            if (emit){
+                const triggerData = {
+                    triggerId: 'soundAdded',
+                    data: {
+                        soundObject: structuredClone(soundObject),
+                        targetId: target.getName()
+                    }
+                };
+                // Dispatch the custom event for the addon to pick up
+                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+            }
             return loadSound(soundObject, this.runtime, target.sprite.soundBank).then(() => {
                 target.addSound(soundObject);
                 this.emitTargetsUpdate();
@@ -1022,6 +1100,16 @@ class VirtualMachine extends EventEmitter {
      * @param {string} newName - the desired new name of the sound (will be modified if already in use).
      */
     renameSound (soundIndex, newName) {
+        const triggerData = {
+            triggerId: 'soundRenamed',
+            data: {
+                soundIndex,
+                newName,
+                targetId: this.editingTarget.getName()
+            }
+        };
+        // Dispatch the custom event for the addon to pick up
+        window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
         this.editingTarget.renameSound(soundIndex, newName);
         this.emitTargetsUpdate();
     }
@@ -1045,12 +1133,12 @@ class VirtualMachine extends EventEmitter {
      * @param {AudioBuffer} newBuffer - new audio buffer for the audio engine.
      * @param {ArrayBuffer} soundEncoding - the new (wav) encoded sound to be stored
      */
-    updateSoundBuffer (soundIndex, newBuffer, soundEncoding) {
-        const sound = this.editingTarget.sprite.sounds[soundIndex];
+    updateSoundBuffer (soundIndex, newBuffer, soundEncoding, edittingTarget = this.editingTarget) {
+        const sound = edittingTarget.sprite.sounds[soundIndex];
         if (sound && sound.broken) delete sound.broken;
         const id = sound ? sound.soundId : null;
         if (id && this.runtime && this.runtime.audioEngine) {
-            this.editingTarget.sprite.soundBank.getSoundPlayer(id).buffer = newBuffer;
+            edittingTarget.sprite.soundBank.getSoundPlayer(id).buffer = newBuffer;
         }
         // Update sound in runtime
         if (soundEncoding) {
@@ -1092,6 +1180,15 @@ class VirtualMachine extends EventEmitter {
         const deletedSound = this.editingTarget.deleteSound(soundIndex);
         if (deletedSound) {
             this.runtime.emitProjectChanged();
+            const triggerData = {
+                triggerId: 'soundDeleted',
+                data: {
+                    soundIndex,
+                    targetId: this.editingTarget.getName()
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
             const restoreFun = () => {
                 target.addSound(deletedSound);
                 this.emitTargetsUpdate();
@@ -1149,9 +1246,10 @@ class VirtualMachine extends EventEmitter {
      * @param {!number} bitmapResolution 1 for bitmaps that have 1 pixel per unit of stage,
      *     2 for double-resolution bitmaps
      */
-    updateBitmap (costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) {
+    // eslint-disable-next-line max-len
+    updateBitmap (costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution, edittingTarget = this.editingTarget) {
         return this._updateBitmap(
-            this.editingTarget.getCostumes()[costumeIndex],
+            edittingTarget.getCostumes()[costumeIndex],
             bitmap,
             rotationCenterX,
             rotationCenterY,
@@ -1218,9 +1316,9 @@ class VirtualMachine extends EventEmitter {
      * @param {number} rotationCenterX x of point about which the costume rotates, relative to its upper left corner
      * @param {number} rotationCenterY y of point about which the costume rotates, relative to its upper left corner
      */
-    updateSvg (costumeIndex, svg, rotationCenterX, rotationCenterY) {
+    updateSvg (costumeIndex, svg, rotationCenterX, rotationCenterY, edittingTarget = this.editingTarget) {
         return this._updateSvg(
-            this.editingTarget.getCostumes()[costumeIndex],
+            edittingTarget.getCostumes()[costumeIndex],
             svg,
             rotationCenterX,
             rotationCenterY
@@ -1262,7 +1360,18 @@ class VirtualMachine extends EventEmitter {
      * @property {number} [bitmapResolution] - the resolution scale for a bitmap backdrop.
      * @returns {?Promise} - a promise that resolves when the backdrop has been added
      */
-    addBackdrop (md5ext, backdropObject) {
+    addBackdrop (md5ext, backdropObject, emit = true) {
+        if (emit){
+            const triggerData = {
+                triggerId: 'backdropAdded',
+                data: {
+                    md5ext,
+                    backdropObject: structuredClone(backdropObject)
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
         return loadCostume(md5ext, backdropObject, this.runtime).then(() => {
             const stage = this.runtime.getTargetForStage();
             stage.addCostume(backdropObject);
@@ -1276,7 +1385,7 @@ class VirtualMachine extends EventEmitter {
      * @param {string} targetId ID of a target whose sprite to rename.
      * @param {string} newName New name of the sprite.
      */
-    renameSprite (targetId, newName) {
+    renameSprite (targetId, newName, emit = true) {
         const target = this.runtime.getTargetById(targetId);
         if (target) {
             if (!target.isSprite()) {
@@ -1301,7 +1410,17 @@ class VirtualMachine extends EventEmitter {
                     const currTarget = allTargets[i];
                     currTarget.blocks.updateAssetName(oldName, newName, 'sprite');
                 }
-
+                if (emit === true) {
+                    const triggerData = {
+                        triggerId: 'spriteRenamed',
+                        data: {
+                            targetId: oldName,
+                            spriteName: newUnusedName
+                        }
+                    };
+                        // Dispatch the custom event for the addon to pick up
+                    window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+                }
                 if (newUnusedName !== oldName) this.emitTargetsUpdate();
             }
         } else {
@@ -1314,9 +1433,10 @@ class VirtualMachine extends EventEmitter {
      * @param {string} targetId ID of a target whose sprite to delete.
      * @return {Function} Returns a function to restore the sprite that was deleted
      */
-    deleteSprite (targetId) {
+    deleteSprite (targetId, emit = true) {
         const target = this.runtime.getTargetById(targetId);
 
+        const targetName = target ? target.getName() : null;
         if (target) {
             const targetIndexBeforeDelete = this.runtime.targets.map(t => t.id).indexOf(target.id);
             if (!target.isSprite()) {
@@ -1346,6 +1466,16 @@ class VirtualMachine extends EventEmitter {
                     }
                 }
             }
+            if (emit){
+                const triggerData = {
+                    triggerId: 'spriteDeleted',
+                    data: {
+                        targetId: targetName
+                    }
+                };
+                // Dispatch the custom event for the addon to pick up
+                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+            }
             // Sprite object should be deleted by GC.
             this.emitTargetsUpdate();
             return restoreSprite;
@@ -1360,7 +1490,7 @@ class VirtualMachine extends EventEmitter {
      * @returns {Promise} Promise that resolves when duplicated target has
      *     been added to the runtime.
      */
-    duplicateSprite (targetId) {
+    duplicateSprite (targetId, emit = true) {
         const target = this.runtime.getTargetById(targetId);
         if (!target) {
             throw new Error('No target with the provided id.');
@@ -1368,6 +1498,16 @@ class VirtualMachine extends EventEmitter {
             throw new Error('Cannot duplicate non-sprite targets.');
         } else if (!target.sprite) {
             throw new Error('No sprite associated with this target.');
+        }
+        if (emit){
+            const triggerData = {
+                triggerId: 'spriteDuplicated',
+                data: {
+                    targetId: target.getName()
+                }
+            };
+                // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
         }
         return target.duplicate().then(newTarget => {
             this.runtime.addTarget(newTarget);
@@ -1534,12 +1674,27 @@ class VirtualMachine extends EventEmitter {
      * shared from that target. This is needed for resolving any potential variable conflicts.
      * @return {!Promise} Promise that resolves when the extensions and blocks have been added.
      */
-    shareBlocksToTarget (blocks, targetId, optFromTargetId) {
+    shareBlocksToTarget (blocks, targetId, optFromTargetId, emit = true) {
         const sb3 = require('./serialization/sb3');
 
         const {blocks: copiedBlocks, extensionURLs} = sb3.deserializeStandaloneBlocks(blocks);
-        newBlockIds(copiedBlocks);
+        if (emit){ // do not change block ids if the collaboration addon is the one calling this
+            newBlockIds(copiedBlocks);
+        }
         const target = this.runtime.getTargetById(targetId);
+
+        if (emit === true) {
+            const triggerData = {
+                triggerId: 'shareBlocksToTarget',
+                data: {
+                    blocks: copiedBlocks, // send the blocks with new ids
+                    targetId: targetId,
+                    optFromTargetId: optFromTargetId
+                }
+            };
+                // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
 
         if (optFromTargetId) {
             // If the blocks are being shared from another target,
@@ -1570,8 +1725,20 @@ class VirtualMachine extends EventEmitter {
      * @param {!string} targetId Id of target to add the costume.
      * @return {Promise} Promise that resolves when the new costume has been loaded.
      */
-    shareCostumeToTarget (costumeIndex, targetId) {
-        const originalCostume = this.editingTarget.getCostumes()[costumeIndex];
+    shareCostumeToTarget (costumeIndex, targetId, editingTarget = this.editingTarget, emit = true) {
+        if (emit) {
+            const triggerData = {
+                triggerId: 'costumeShared',
+                data: {
+                    costumeIndex,
+                    targetId: this.runtime.getTargetById(targetId).getName(),
+                    editingTargetId: editingTarget.getName()
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
+        const originalCostume = editingTarget.getCostumes()[costumeIndex];
         const clone = Object.assign({}, originalCostume);
         const md5ext = `${clone.assetId}.${clone.dataFormat}`;
         return loadCostume(md5ext, clone, this.runtime).then(() => {
@@ -1591,8 +1758,20 @@ class VirtualMachine extends EventEmitter {
      * @param {!string} targetId Id of target to add the sound.
      * @return {Promise} Promise that resolves when the new sound has been loaded.
      */
-    shareSoundToTarget (soundIndex, targetId) {
-        const originalSound = this.editingTarget.getSounds()[soundIndex];
+    shareSoundToTarget (soundIndex, targetId, editingTarget = this.editingTarget, emit = true) {
+        if (emit) {
+            const triggerData = {
+                triggerId: 'soundShared',
+                data: {
+                    soundIndex,
+                    targetId: this.runtime.getTargetById(targetId).getName(),
+                    editingTargetId: editingTarget.getName()
+                }
+            };
+            // Dispatch the custom event for the addon to pick up
+            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+        }
+        const originalSound = editingTarget.getSounds()[soundIndex];
         const clone = Object.assign({}, originalSound);
         const target = this.runtime.getTargetById(targetId);
         return loadSound(clone, this.runtime, target.sprite.soundBank).then(() => {
@@ -1755,6 +1934,16 @@ class VirtualMachine extends EventEmitter {
         if (target) {
             const reorderSuccessful = target.reorderCostume(costumeIndex, newIndex);
             if (reorderSuccessful) {
+                const triggerData = {
+                    triggerId: 'costumeReordered',
+                    data: {
+                        targetId: target.getName(),
+                        costumeIndex: costumeIndex,
+                        newIndex: newIndex
+                    }
+                };
+                // Dispatch the custom event for the addon to pick up
+                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
                 this.runtime.emitProjectChanged();
             }
             return reorderSuccessful;
@@ -1774,6 +1963,16 @@ class VirtualMachine extends EventEmitter {
         if (target) {
             const reorderSuccessful = target.reorderSound(soundIndex, newIndex);
             if (reorderSuccessful) {
+                const triggerData = {
+                    triggerId: 'soundReordered',
+                    data: {
+                        targetId: target.getName(),
+                        soundIndex: soundIndex,
+                        newIndex: newIndex
+                    }
+                };
+                // Dispatch the custom event for the addon to pick up
+                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
                 this.runtime.emitProjectChanged();
             }
             return reorderSuccessful;
