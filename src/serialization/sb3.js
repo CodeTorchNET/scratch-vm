@@ -100,6 +100,54 @@ const primitiveOpcodeInfoMap = {
 const UPSTREAM_MAX_COMMENT_LENGTH = 8000;
 
 /**
+ * Detect a circular dependency in the given blocks object.
+ * @param {object} blocks The blocks object to check.
+ * @returns {boolean} True if a circular dependency is detected, false otherwise.
+ */
+const hasCircularDependency = function (blocks) {
+    const blockIds = Object.keys(blocks);
+    for (const startId of blockIds) {
+        const visitedInPath = new Set();
+
+        const traverse = function (blockId) {
+            if (!blockId) return false;
+            if (visitedInPath.has(blockId)) {
+                log.warn(`Circular dependency detected: block with id ${blockId} is referenced within its own child structure.`);
+                return true;
+            }
+
+            const block = blocks[blockId];
+            // Block may not exist if it's a link to a deleted block. This is not a cycle.
+            if (!block) return false;
+
+            visitedInPath.add(blockId);
+
+            if (traverse(block.next)) return true;
+
+            if (block.inputs) {
+                for (const inputName in block.inputs) {
+                    if (!Object.prototype.hasOwnProperty.call(block.inputs, inputName)) continue;
+
+                    const input = block.inputs[inputName];
+                    if (input) {
+                        if (input.block && traverse(input.block)) return true;
+                        if (input.shadow && input.shadow !== input.block && traverse(input.shadow)) return true;
+                    }
+                }
+            }
+
+            visitedInPath.delete(blockId);
+            return false;
+        };
+
+        if (traverse(startId)) {
+            return true;
+        }
+    }
+    return false;
+};
+
+/**
  * Serializes primitives described above into a more compact format
  * @param {object} block the block to serialize
  * @return {array} An array representing the information in the block,
@@ -1177,6 +1225,11 @@ const parseScratchObject = function (object, runtime, extensions, zip, assets) {
     }
     if (Object.prototype.hasOwnProperty.call(object, 'blocks')) {
         deserializeBlocks(object.blocks);
+
+        if (hasCircularDependency(object.blocks)) {
+            throw new Error('Project\'s blocks contains circular dependency.');
+        }
+
         // Take a second pass to create objects and add extensions
         for (const blockId in object.blocks) {
             if (!Object.prototype.hasOwnProperty.call(object.blocks, blockId)) continue;
