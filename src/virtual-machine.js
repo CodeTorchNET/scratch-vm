@@ -259,6 +259,33 @@ class VirtualMachine extends EventEmitter {
         };
     }
 
+    getLoadedExtensionsInfo () {
+        const extensionManager = this.extensionManager;
+        const runtime = this.runtime;
+
+        if (!extensionManager || !runtime) {
+            console.error('Virtual Machine is not properly initialized with an ExtensionManager and Runtime.');
+            return [];
+        }
+
+        const loadedExtensionIds = new Set(extensionManager._loadedExtensions.keys());
+        const allRegisteredCategories = runtime._blockInfo;
+        const extensionsInfo = [];
+
+        for (const category of allRegisteredCategories) {
+            if (loadedExtensionIds.has(category.id)) {
+                extensionsInfo.push({
+                    id: category.id,
+                    name: category.name,
+                    icon: category.blockIconURI || category.menuIconURI,
+                    color: category.color1
+                });
+            }
+        }
+
+        return extensionsInfo;
+    }
+
     /**
      * Start running the VM - do this before anything else.
      */
