@@ -26,7 +26,9 @@ const defaultBuiltinExtensions = {
     boost: () => require('../extensions/scratch3_boost'),
     gdxfor: () => require('../extensions/scratch3_gdx_for'),
     // tw: core extension
-    tw: () => require('../extensions/tw')
+    tw: () => require('../extensions/tw'),
+    // Custom Achievements extension
+    customAchievements: () => require('../extensions/custom_achievements')
 };
 
 /**
@@ -157,8 +159,9 @@ class ExtensionManager {
      * Synchronously load an internal extension (core or non-core) by ID. This call will
      * fail if the provided id is not does not match an internal extension.
      * @param {string} extensionId - the ID of an internal extension
+     * @param {object} additionalInfo data to be passed on to very special extensions (EG: customAchievements)
      */
-    loadExtensionIdSync (extensionId) {
+    loadExtensionIdSync (extensionId, additionalInfo = {}) {
         if (!this.isBuiltinExtension(extensionId)) {
             log.warn(`Could not find extension ${extensionId} in the built in extensions.`);
             return;
@@ -172,7 +175,12 @@ class ExtensionManager {
         }
 
         const extension = this.builtinExtensions[extensionId]();
-        const extensionInstance = new extension(this.runtime);
+        const passedDownRuntime = this.runtime;
+        // this is hardcoded to prevent security vulnerabilities where an extension could read JWT access token
+        if (extensionId === 'customAchievements'){
+            passedDownRuntime.additionalInfo = additionalInfo;
+        }
+        const extensionInstance = new extension(passedDownRuntime);
         const serviceName = this._registerInternalExtension(extensionInstance);
         this._loadedExtensions.set(extensionId, serviceName);
         this.runtime.compilerRegisterExtension(extensionId, extensionInstance);
@@ -211,10 +219,10 @@ class ExtensionManager {
      * @param {string} extensionURL - the URL for the extension to load OR the ID of an internal extension
      * @returns {Promise} resolved once the extension is loaded and initialized or rejected on failure
      */
-    async loadExtensionURL (extensionURL, emit = true) {
+    async loadExtensionURL (extensionURL, emit = true, additionalInfo = {}) {
         if (this.isBuiltinExtension(extensionURL)) {
             if (emit) this._CollaborationEmitTrigger(extensionURL);
-            this.loadExtensionIdSync(extensionURL, false);
+            this.loadExtensionIdSync(extensionURL, additionalInfo);
             return;
         }
 

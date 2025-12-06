@@ -1140,6 +1140,22 @@ class Runtime extends EventEmitter {
             }
         }
 
+        if (extensionInfo.id === 'customAchievements') {
+            const xml = '<button ' +
+                `text="${xmlEscape(maybeFormatMessage({
+                    id: 'tw.blocks.modifyAchievements',
+                    default: 'Modify Achievements',
+                    description: 'Button that opens popup to modify achievements'
+                }))}" ` +
+                'callbackKey="OPEN_ACHIEVEMENT_POPUP" ' +
+                `callbackData="OPEN_ACHIEVEMENT_POPUP"></button>`;
+            const block = {
+                info: {},
+                xml
+            };
+            categoryInfo.blocks.push(block);
+        }
+
         if (extensionInfo.docsURI) {
             const xml = '<button ' +
                 `text="${xmlEscape(maybeFormatMessage({
