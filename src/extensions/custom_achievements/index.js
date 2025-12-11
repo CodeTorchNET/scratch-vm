@@ -13,6 +13,9 @@ class CustomAchievements {
         this._cache = {};
         this._projectId = null;
         this._fetchPromise = null;
+        this._popupCloseResolve = null;
+
+        this._overriddenAchievements = new Set();
 
         this._API_HOST = this.runtime.additionalInfo.API_HOST;
         this._API_BASE = `${this._API_HOST}/v1/`;
@@ -34,9 +37,14 @@ class CustomAchievements {
         }
 
         // Poll every minute (60000ms) to sync with server
-        this._pollInterval = setInterval(() => {
-            this._fetchData();
-        }, 60000);
+        // Logic: Only poll if we have a valid user (not anonymous) AND we are not in editor/creator mode
+        if (this._accessToken !== 'anonymous' && this._canRecieveAchievement) {
+            this._pollInterval = setInterval(() => {
+                this._fetchData();
+            }, 60000);
+        } else {
+            console.log('skipping achievement polling');
+        }
 
 
         window.addEventListener('message', event => {
@@ -46,9 +54,17 @@ class CustomAchievements {
             }
 
             const data = event.data;
-            if (data?.type === 'block-compiler-action' && data?.action === 'ACHIEVEMENT MODIFIED') {
-                if (data.achievementData && Array.isArray(data.achievementData)) {
-                    this._updateCacheFromData(data.achievementData);
+            if (data?.type === 'block-compiler-action') {
+                if (data.action === 'ACHIEVEMENT MODIFIED') {
+                    if (data.achievementData && Array.isArray(data.achievementData)) {
+                        this._updateCacheFromData(data.achievementData);
+                    }
+                } else if (data.action === 'POPUP_CLOSED') {
+                    this.runtime.startHats('customAchievements_whenLeaderboardClosed');
+                    if (this._popupCloseResolve) {
+                        this._popupCloseResolve();
+                        this._popupCloseResolve = null;
+                    }
                 }
             }
         });
@@ -60,18 +76,66 @@ class CustomAchievements {
      * @param {Array} data Array of achievement objects from API or preload
      */
     _updateCacheFromData (data) {
-        // Rebuild cache keyed by Name
+        let newUnlockCount = 0;
+        const totalCount = data.length;
+        const newlyUnlocked = [];
+
+        const oldCache = this._cache;
         this._cache = {};
+
         data.forEach(ach => {
+            const oldData = oldCache[ach.name];
+            const wasUnlocked = oldData && oldData.unlocked;
+            let isUnlocked = ach.unlocked || false;
+
+            // In editor mode, assume everything is locked initially to allow testing
+            if (!this._canRecieveAchievement) {
+                isUnlocked = false;
+            }
+
+            if (this._overriddenAchievements.has(ach.name)) {
+                isUnlocked = true;
+                if (!ach.unlocked_at) {
+                    ach.unlocked_at = oldData ? oldData.unlockedAt : new Date().toISOString();
+                }
+            }
+
             this._cache[ach.name] = {
                 id: ach.id,
-                unlocked: ach.unlocked || false
+                unlocked: isUnlocked,
+                description: ach.description || '',
+                rarity: ach.rarity || 0,
+                unlockedAt: ach.unlocked_at || null
             };
+
+            if (isUnlocked) newUnlockCount++;
+            if (!wasUnlocked && isUnlocked) {
+                newlyUnlocked.push(ach.name);
+            }
         });
 
         // Refresh blocks to update the menu if manager is available
         if (this.runtime.extensionManager) {
             this.runtime.extensionManager.refreshBlocks();
+        }
+
+        newlyUnlocked.forEach(name => {
+            this.runtime.startHats('customAchievements_whenAchievementUnlocked', {
+                ACHIEVEMENT: 'any'
+            });
+            this.runtime.startHats('customAchievements_whenAchievementUnlocked', {
+                ACHIEVEMENT: name
+            });
+        });
+
+        if (totalCount > 0 && newUnlockCount === totalCount) {
+            const oldTotalUnlocked = Object.values(oldCache).filter(a => a.unlocked).length;
+            const oldTotalCount = Object.keys(oldCache).length;
+            const wasComplete = oldTotalCount > 0 && oldTotalUnlocked === oldTotalCount;
+            
+            if (!wasComplete) {
+                this.runtime.startHats('customAchievements_whenAllAchievementsCompleted');
+            }
         }
     }
 
@@ -165,12 +229,160 @@ class CustomAchievements {
                             menu: 'achievementsMenu'
                         }
                     }
+                },
+                {
+                    opcode: 'openAchievementPopup',
+                    blockType: BlockType.COMMAND,
+                    text: formatMessage({
+                        id: 'customAchievements.openAchievementPopup',
+                        default: 'open achievement popup and [PAUSE_OPTION]',
+                        description: 'Open the achievements/leaderboard popup'
+                    }),
+                    arguments: {
+                        PAUSE_OPTION: {
+                            type: ArgumentType.STRING,
+                            menu: 'pauseOptions',
+                            defaultValue: 'pause'
+                        }
+                    }
+                },
+                {
+                    opcode: 'whenLeaderboardClosed',
+                    blockType: BlockType.EVENT,
+                    isEdgeActivated: false,
+                    text: formatMessage({
+                        id: 'customAchievements.whenLeaderboardClosed',
+                        default: 'when leaderboard popup closed',
+                        description: 'Event triggered when the leaderboard/achievement popup is closed'
+                    })
+                },
+                '---',
+                {
+                    opcode: 'getUnlockedCount',
+                    blockType: BlockType.REPORTER,
+                    text: formatMessage({
+                        id: 'customAchievements.getUnlockedCount',
+                        default: 'number of unlocked achievements',
+                        description: 'Returns the count of unlocked achievements'
+                    }),
+                    disableMonitor: true
+                },
+                {
+                    opcode: 'getTotalCount',
+                    blockType: BlockType.REPORTER,
+                    text: formatMessage({
+                        id: 'customAchievements.getTotalCount',
+                        default: 'number of total achievements',
+                        description: 'Returns the total count of achievements'
+                    }),
+                    disableMonitor: true
+                },
+                {
+                    opcode: 'getAchievementData',
+                    blockType: BlockType.REPORTER,
+                    text: formatMessage({
+                        id: 'customAchievements.getAchievementData',
+                        default: '[DATA_TYPE] of [ACHIEVEMENT]',
+                        description: 'Get specific data about an achievement'
+                    }),
+                    arguments: {
+                        DATA_TYPE: {
+                            type: ArgumentType.STRING,
+                            menu: 'achievementDataMenu',
+                            defaultValue: 'description'
+                        },
+                        ACHIEVEMENT: {
+                            type: ArgumentType.STRING,
+                            menu: 'achievementsMenu'
+                        }
+                    }
+                },
+                '---',
+                {
+                    opcode: 'whenAchievementUnlocked',
+                    blockType: BlockType.EVENT,
+                    isEdgeActivated: false,
+                    text: formatMessage({
+                        id: 'customAchievements.whenAchievementUnlocked',
+                        default: 'when achievement [ACHIEVEMENT] unlocked',
+                        description: 'Triggers when a specific achievement is unlocked'
+                    }),
+                    arguments: {
+                        ACHIEVEMENT: {
+                            type: ArgumentType.STRING,
+                            menu: 'achievementsMenuWithAny',
+                            defaultValue: 'any'
+                        }
+                    }
+                },
+                {
+                    opcode: 'whenAllAchievementsCompleted',
+                    blockType: BlockType.EVENT,
+                    isEdgeActivated: false,
+                    text: formatMessage({
+                        id: 'customAchievements.whenAllAchievementsCompleted',
+                        default: 'when all achievements completed',
+                        description: 'Triggers when 100% of achievements are unlocked'
+                    })
                 }
             ],
             menus: {
                 achievementsMenu: {
                     acceptReporters: true,
                     items: 'getAchievementsMenu'
+                },
+                achievementsMenuWithAny: {
+                    acceptReporters: false,
+                    items: 'getAchievementsMenuWithAny'
+                },
+                pauseOptions: {
+                    acceptReporters: true,
+                    items: [
+                        {
+                            text: formatMessage({
+                                id: 'customAchievements.pause',
+                                default: 'pause',
+                                description: 'Pause the project execution'
+                            }),
+                            value: 'pause'
+                        },
+                        {
+                            text: formatMessage({
+                                id: 'customAchievements.dontPause',
+                                default: "don't pause",
+                                description: 'Do not pause the project execution'
+                            }),
+                            value: 'no_pause'
+                        }
+                    ]
+                },
+                achievementDataMenu: {
+                    items: [
+                        {
+                            text: formatMessage({
+                                id: 'customAchievements.data.dateUnlocked',
+                                default: 'date unlocked',
+                                description: 'Date the achievement was unlocked'
+                            }),
+                            value: 'date unlocked'
+                        },
+                        {
+                            text: formatMessage({
+                                id: 'customAchievements.data.description',
+                                default: 'description',
+                                description: 'Description of the achievement'
+                            }),
+                            value: 'description'
+                        },
+                        {
+                            text: formatMessage({
+                                id: 'customAchievements.data.rarity',
+                                default: 'rarity',
+                                description: 'Rarity of the achievement'
+                            }),
+                            value: 'rarity'
+                        }
+                    ]
                 }
             }
         };
@@ -206,6 +418,21 @@ class CustomAchievements {
         return items;
     }
 
+    getAchievementsMenuWithAny () {
+        const items = this.getAchievementsMenu();
+        if (items.length > 0 && items[0].value !== '' && items[0].value !== 'error') {
+            items.unshift({
+                text: formatMessage({
+                    id: 'customAchievements.any',
+                    default: 'any',
+                    description: 'Any achievement'
+                }),
+                value: 'any'
+            });
+        }
+        return items;
+    }
+
     /**
      * Helper to send messages to the UI via postMessage.
      * @param {string} action The action type.
@@ -219,11 +446,30 @@ class CustomAchievements {
         }, this._TRUSTED_IFRAME_HOST || '*');
     }
 
+    openAchievementPopup (args) {
+        this._sendToUI('OPEN_ACHIEVEMENT_POPUP');
+
+        if (args.PAUSE_OPTION === 'pause') {
+            return new Promise(resolve => {
+                this._popupCloseResolve = resolve;
+            });
+        }
+    }
+
     async unlockAchievement (args) {
         const achievementName = Cast.toString(args.ACHIEVEMENT);
         const projectId = this._projectId;
 
         if (!projectId || !achievementName) return;
+
+        // Look up ID by name
+        const achievementData = this._cache[achievementName];
+        if (!achievementData) {
+            console.warn(`Achievement "${achievementName}" not found in this project.`);
+            return;
+        }
+
+        const wasUnlocked = this._cache[achievementName].unlocked;
 
         if (!this._canRecieveAchievement) {
             // eslint-disable-next-line no-negated-condition
@@ -240,13 +486,24 @@ class CustomAchievements {
                     achievementName
                 });
             }
-            return;
-        }
 
-        // Look up ID by name
-        const achievementData = this._cache[achievementName];
-        if (!achievementData) {
-            console.warn(`Achievement "${achievementName}" not found in this project.`);
+            if (!wasUnlocked) {
+                this._overriddenAchievements.add(achievementName);
+                this._cache[achievementName].unlocked = true;
+                this._cache[achievementName].unlockedAt = new Date().toISOString();
+
+                this.runtime.startHats('customAchievements_whenAchievementUnlocked', {
+                    ACHIEVEMENT: 'any'
+                });
+                this.runtime.startHats('customAchievements_whenAchievementUnlocked', {
+                    ACHIEVEMENT: achievementName
+                });
+                const totalUnlocked = Object.values(this._cache).filter(a => a.unlocked).length;
+                const totalCount = Object.keys(this._cache).length;
+                if (totalCount > 0 && totalUnlocked === totalCount) {
+                    this.runtime.startHats('customAchievements_whenAllAchievementsCompleted');
+                }
+            }
             return;
         }
 
@@ -274,9 +531,25 @@ class CustomAchievements {
             });
 
             if (res.ok) {
-                // Update local cache immediately
+                const now = new Date().toISOString();
                 if (this._cache[achievementName]) {
                     this._cache[achievementName].unlocked = true;
+                    this._cache[achievementName].unlockedAt = now;
+
+                    if (!wasUnlocked) {
+                        this.runtime.startHats('customAchievements_whenAchievementUnlocked', {
+                            ACHIEVEMENT: 'any'
+                        });
+                        this.runtime.startHats('customAchievements_whenAchievementUnlocked', {
+                            ACHIEVEMENT: achievementName
+                        });
+
+                        const totalUnlocked = Object.values(this._cache).filter(a => a.unlocked).length;
+                        const totalCount = Object.keys(this._cache).length;
+                        if (totalCount > 0 && totalUnlocked === totalCount) {
+                            this.runtime.startHats('customAchievements_whenAllAchievementsCompleted');
+                        }
+                    }
                 } else {
                     // If it wasn't in cache (e.g. added while project running), refresh
                     this._fetchData();
@@ -299,6 +572,49 @@ class CustomAchievements {
         if (this._cache[achievementName]) {
             return this._cache[achievementName].unlocked;
         }
+        return false;
+    }
+
+    getUnlockedCount () {
+        return Object.values(this._cache).filter(a => a.unlocked).length;
+    }
+
+    getTotalCount () {
+        return Object.keys(this._cache).length;
+    }
+
+    getAchievementData (args) {
+        const achievementName = Cast.toString(args.ACHIEVEMENT);
+        const type = args.DATA_TYPE;
+        const data = this._cache[achievementName];
+
+        if (!data) return '';
+
+        if (type === 'date unlocked') {
+            if (!data.unlocked || !data.unlockedAt) return '';
+            const date = new Date(data.unlockedAt);
+            if (isNaN(date.getTime())) return '';
+            // XX/XX/XXXX format (MM/DD/YYYY)
+            const month = (date.getMonth() + 1).toString().padStart(2, '0');
+            const day = date
+                .getDate()
+                .toString()
+                .padStart(2, '0');
+            const year = date.getFullYear();
+            return `${month}/${day}/${year}`;
+        } else if (type === 'description') {
+            return data.description || '';
+        } else if (type === 'rarity') {
+            return data.rarity || 0;
+        }
+        return '';
+    }
+
+    whenAchievementUnlocked () {
+        return false;
+    }
+
+    whenAllAchievementsCompleted () {
         return false;
     }
 }
