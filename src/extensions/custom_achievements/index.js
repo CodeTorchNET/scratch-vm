@@ -65,6 +65,8 @@ class CustomAchievements {
                         this._popupCloseResolve();
                         this._popupCloseResolve = null;
                     }
+                } else if (data.action === 'ACHIEVEMENT_RENAMED') {
+                    this._renameAchievement(data.oldName, data.newName);
                 }
             }
         });
@@ -137,6 +139,65 @@ class CustomAchievements {
                 this.runtime.startHats('customAchievements_whenAllAchievementsCompleted');
             }
         }
+    }
+
+    /**
+     * Renames an achievement in the cache and updates all blocks referencing it.
+     * @param {string} oldName The previous name of the achievement
+     * @param {string} newName The new name of the achievement
+     */
+    _renameAchievement (oldName, newName) {
+        if (!oldName || !newName || oldName === newName) return;
+
+        // 1. Update internal cache
+        if (Object.prototype.hasOwnProperty.call(this._cache, oldName)) {
+            this._cache[newName] = this._cache[oldName];
+            delete this._cache[oldName];
+        }
+
+        // 2. Update overridden set
+        if (this._overriddenAchievements.has(oldName)) {
+            this._overriddenAchievements.delete(oldName);
+            this._overriddenAchievements.add(newName);
+        }
+
+        // 3. Update blocks in the runtime
+        const targets = this.runtime.targets;
+        for (let i = 0; i < targets.length; i++) {
+            const target = targets[i];
+            const blocks = target.blocks;
+            
+            for (const blockId in blocks._blocks) {
+                if (!Object.prototype.hasOwnProperty.call(blocks._blocks, blockId)) continue;
+                const block = blocks._blocks[blockId];
+
+                // Check if this is a custom achievements block
+                if (block.opcode.startsWith('customAchievements_')) {
+                    // Check inputs (for menu arguments)
+                    if (block.inputs.ACHIEVEMENT) {
+                        const input = block.inputs.ACHIEVEMENT;
+                        // Usually extension menus are shadow blocks connected to the input
+                        const shadowBlockId = input.shadow;
+                        if (shadowBlockId) {
+                            const shadowBlock = blocks.getBlock(shadowBlockId);
+                            if (shadowBlock && shadowBlock.fields) {
+                                for (const fieldName in shadowBlock.fields) {
+                                    if (shadowBlock.fields[fieldName].value === oldName) {
+                                        shadowBlock.fields[fieldName].value = newName;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Refresh UI to show new name in dropdowns and blocks
+        if (this.runtime.extensionManager) {
+            this.runtime.extensionManager.refreshBlocks();
+        }
+        this.runtime.requestBlocksUpdate();
     }
 
     /**
