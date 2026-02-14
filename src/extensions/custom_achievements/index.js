@@ -297,7 +297,7 @@ class CustomAchievements {
                     text: formatMessage({
                         id: 'customAchievements.openAchievementPopup',
                         default: 'open achievement popup and [PAUSE_OPTION]',
-                        description: 'Open the achievements/leaderboard popup'
+                        description: 'Open the achievements popup'
                     }),
                     arguments: {
                         PAUSE_OPTION: {
@@ -308,13 +308,17 @@ class CustomAchievements {
                     }
                 },
                 {
+                    /* THIS IS OPCODE IS COMPLETELY INCORRECT AND MAKES NO SENSE,
+                    however due to the fact that existing projects use this inccorect code we cant't change it
+                    this block is ONLY used ACHIEVEMENT popup is closed
+                    */
                     opcode: 'whenLeaderboardClosed',
                     blockType: BlockType.EVENT,
                     isEdgeActivated: false,
                     text: formatMessage({
-                        id: 'customAchievements.whenLeaderboardClosed',
-                        default: 'when leaderboard popup closed',
-                        description: 'Event triggered when the leaderboard/achievement popup is closed'
+                        id: 'customAchievements.whenAchievementClosed',
+                        default: 'when achievement popup closed',
+                        description: 'Event triggered when the achievement popup is closed'
                     })
                 },
                 '---',

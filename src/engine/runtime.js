@@ -53,7 +53,8 @@ const FrameLoop = require('./tw-frame-loop');
 
 const defaultExtensionColors = ['#0FBD8C', '#0DA57A', '#0B8E69'];
 
-const COMMENT_CONFIG_MAGIC = ' // _twconfig_';
+const COMMENT_CONFIG_MAGIC = ' // _ctconfig_';
+const OLD_COMMENT_CONFIG_MAGIC = ' // _twconfig_';
 
 /**
  * Information used for converting Scratch argument types into scratch-blocks data.
@@ -2845,7 +2846,7 @@ class Runtime extends EventEmitter {
         const target = this.getTargetForStage();
         const comments = target.comments;
         for (const comment of Object.values(comments)) {
-            if (comment.text.includes(COMMENT_CONFIG_MAGIC)) {
+            if (comment.text.includes(COMMENT_CONFIG_MAGIC) || comment.text.includes(OLD_COMMENT_CONFIG_MAGIC)) {
                 return comment;
             }
         }
@@ -2855,7 +2856,10 @@ class Runtime extends EventEmitter {
     parseProjectOptions () {
         const comment = this.findProjectOptionsComment();
         if (!comment) return;
-        const lineWithMagic = comment.text.split('\n').find(i => i.endsWith(COMMENT_CONFIG_MAGIC));
+        const lineWithMagic = comment.text.split('\n').find(i => (
+            i.endsWith(COMMENT_CONFIG_MAGIC) ||
+            i.endsWith(OLD_COMMENT_CONFIG_MAGIC)
+        ));
         if (!lineWithMagic) {
             log.warn('Config comment does not contain valid line');
             return;
@@ -2931,7 +2935,7 @@ class Runtime extends EventEmitter {
     storeProjectOptions () {
         const options = this.generateDifferingProjectOptions();
         // TODO: translate
-        const text = `Configuration for https://turbowarp.org/\nYou can move, resize, and minimize this comment, but don't edit it by hand. This comment can be deleted to remove the stored settings.\n${ExtendedJSON.stringify(options)}${COMMENT_CONFIG_MAGIC}`;
+        const text = `Configuration for https://codetorch.net/\nYou can move, resize, and minimize this comment, but don't edit it by hand. This comment can be deleted to remove the stored settings.\n${ExtendedJSON.stringify(options)}${COMMENT_CONFIG_MAGIC}`;
         const existingComment = this.findProjectOptionsComment();
         if (existingComment) {
             existingComment.text = text;
