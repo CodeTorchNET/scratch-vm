@@ -1,28 +1,8 @@
-## TurboWarp/scratch-vm
+## CodeTorchNET/scratch-vm
 
-Modified Scratch VM with a JIT compiler and more features.
+Modified Turbowarp VM for use in CodeTorch.
 
-This is a drop-in replacement for LLK/scratch-vm.
-
-## Setup
-
-See https://github.com/TurboWarp/scratch-gui/wiki/Getting-Started to setup the complete TurboWarp environment.
-
-If you just want to play with the VM then it's the same process as upstream scratch-vm.
-
-## Extension authors
-
-If you only use the standard reporter, boolean, and command block types, everything should just work without any changes.
-
-## Compiler Overview
-
-For a high-level overview of how the compiler works, see https://docs.turbowarp.org/how
-
-For more technical information, read the code in src/compiler.
-
-## Public API
-
-This section was too out of date to be useful. We hope to re-add it as some point.
+This program includes code and concepts adapted from [Gandi-IDE/scratch-vm](https://github.com/Gandi-IDE/scratch-vm), which is also licensed under the Mozilla Public License, v. 2.0.
 
 ## License
 

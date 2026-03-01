@@ -112,6 +112,7 @@ const hasCircularDependency = function (blocks) {
         const traverse = function (blockId) {
             if (!blockId) return false;
             if (visitedInPath.has(blockId)) {
+                // eslint-disable-next-line max-len
                 log.warn(`Circular dependency detected: block with id ${blockId} is referenced within its own child structure.`);
                 return true;
             }
@@ -866,10 +867,10 @@ const serialize = function (runtime, targetId, {allowOptimization = true} = {}) 
  * @param {object} blocks The entire blocks object currently in the process of getting serialized.
  * @return {object} The deserialized input descriptor.
  */
-const deserializeInputDesc = function (inputDescOrId, parentId, isShadow, blocks) {
+const deserializeInputDesc = function (inputDescOrId, parentId, isShadow, blocks, blockId) {
     if (!Array.isArray(inputDescOrId)) return inputDescOrId;
     const primitiveObj = Object.create(null);
-    const newId = uid();
+    const newId = blockId || uid();
     primitiveObj.id = newId;
     primitiveObj.next = null;
     primitiveObj.parent = parentId;
@@ -1007,7 +1008,7 @@ const deserializeInputDesc = function (inputDescOrId, parentId, isShadow, blocks
     }
     }
     blocks[newId] = primitiveObj;
-    return newId;
+    return primitiveObj.id;
 };
 
 /**
@@ -1100,7 +1101,7 @@ const deserializeBlocks = function (blocks) {
             // delete the old entry in object.blocks and replace it w/the
             // deserialized object
             delete blocks[blockId];
-            deserializeInputDesc(block, null, false, blocks);
+            deserializeInputDesc(block, null, false, blocks, blockId);
             continue;
         }
         block.id = blockId; // add id back to block since it wasn't serialized
@@ -1150,6 +1151,12 @@ const parseScratchAssets = function (object, runtime, zip) {
             rotationCenterX: costumeSource.rotationCenterX,
             rotationCenterY: costumeSource.rotationCenterY
         };
+        Object.defineProperty(costume, 'id', {
+            value: uid(),
+            writable: false,
+            enumerable: true
+        });
+
         const dataFormat =
             costumeSource.dataFormat ||
             (costumeSource.assetType && costumeSource.assetType.runtimeFormat) || // older format
@@ -1183,6 +1190,13 @@ const parseScratchAssets = function (object, runtime, zip) {
             dataFormat: soundSource.dataFormat,
             data: null
         };
+
+        Object.defineProperty(sound, 'id', {
+            value: uid(),
+            writable: false,
+            enumerable: true
+        });
+
         // deserializeSound should be called on the sound object we're
         // creating above instead of the source sound object, because this way
         // we're always loading the 'sb3' representation of the costume
@@ -1214,7 +1228,7 @@ const parseScratchObject = function (object, runtime, extensions, zip, assets) {
         return Promise.resolve(null);
     }
     // Blocks container for this object.
-    const blocks = new Blocks(runtime);
+    const blocks = new Blocks(runtime, false, object.id);
 
     // @todo: For now, load all Scratch objects (stage/sprites) as a Sprite.
     const sprite = new Sprite(blocks, runtime);
@@ -1492,8 +1506,8 @@ const deserializeMonitor = function (monitorData, runtime, targets, extensions) 
             extensions.extensionIDs.add(extensionID);
         }
     }
-
-    runtime.requestAddMonitor(MonitorRecord(monitorData));
+    // Do not trigger emitMonitorsChanged by serializing the new monitor
+    runtime.requestAddMonitor(MonitorRecord(monitorData), true);
 };
 
 // Replace variable IDs throughout the project with
@@ -1536,7 +1550,7 @@ const checkPlatformCompatibility = (json, runtime) => {
     }
 
     const projectPlatform = json.meta.platform.name;
-    if (projectPlatform === runtime.platform.name || projectPlatform === "TurboWarp") {
+    if (projectPlatform === runtime.platform.name || projectPlatform === 'TurboWarp') {
         return;
     }
 
@@ -1645,8 +1659,20 @@ module.exports = {
     serialize: serialize,
     deserialize: deserialize,
     deserializeBlocks: deserializeBlocks,
+    deserializeInputs: deserializeInputs,
+    deserializeFields: deserializeFields,
     serializeBlocks: serializeBlocks,
+    serializeTarget: serializeTarget,
+    serializeMonitors: serializeMonitors,
+    deserializeMonitor: deserializeMonitor,
+    serializeSound: serializeSound,
+    deserializeSound: deserializeSound,
+    serializeComments: serializeComments,
+    serializeVariables: serializeVariables,
+    getExtensionIdForOpcode: getExtensionIdForOpcode,
+    deserializeInputDesc: deserializeInputDesc,
+    serializePrimitiveBlock: serializePrimitiveBlock,
+    primitiveOpcodeInfoMap: primitiveOpcodeInfoMap,
     deserializeStandaloneBlocks: deserializeStandaloneBlocks,
-    serializeStandaloneBlocks: serializeStandaloneBlocks,
-    getExtensionIdForOpcode: getExtensionIdForOpcode
+    serializeStandaloneBlocks: serializeStandaloneBlocks
 };

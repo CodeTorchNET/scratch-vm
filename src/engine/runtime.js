@@ -336,6 +336,12 @@ class Runtime extends EventEmitter {
         this.turboMode = false;
 
         /**
+         * The id of the editor's current operator.
+         * @type {!string}
+         */
+        this.editorId = null;
+
+        /**
          * tw: Responsible for managing the VM's many timers.
          */
         this.frameLoop = new FrameLoop(this);
@@ -751,6 +757,74 @@ class Runtime extends EventEmitter {
         return 'PROJECT_CHANGED';
     }
 
+
+    /**
+     * Event name for editing target's blocks was changed.
+     * @const {string}
+     */
+    static get TARGET_BLOCKS_CHANGED () {
+        return 'TARGET_BLOCKS_CHANGED';
+    }
+
+    /**
+     * Event name for editing target's simple property(name, size, x, y, etc) was changed.
+     * @const {string}
+     */
+    static get TARGET_SIMPLE_PROPERTY_CHANGED () {
+        return 'TARGET_SIMPLE_PROPERTY_CHANGED';
+    }
+
+    /**
+     * Event name for editing target's comments was changed.
+     * @const {string}
+     */
+    static get TARGET_COMMENTS_CHANGED () {
+        return 'TARGET_COMMENTS_CHANGED';
+    }
+
+    /**
+     * Event name for editing target's costome was changed.
+     * @const {string}
+     */
+    static get TARGET_COSTUME_CHANGED () {
+        return 'TARGET_COSTUME_CHANGED';
+    }
+
+    /**
+     * Event name for editing target's currentCostome was changed.
+     * @const {string}
+     */
+    static get TARGET_CURRENT_COSTUME_CHANGED () {
+        return 'TARGET_CURRENT_COSTUME_CHANGED';
+    }
+
+    /**
+     * Event name for when a target is renamed.
+     * @const {string}
+     */
+    static get TARGET_RENAMED () {
+        return 'TARGET_RENAMED';
+    }
+
+    static get TARGETS_INDEX_CHANGED () {
+        return 'TARGETS_INDEX_CHANGED';
+    }
+    /**
+     * Event name for editing target's variables was changed.
+     * @const {string}
+     */
+    static get TARGET_VARIABLES_CHANGED () {
+        return 'TARGET_VARIABLES_CHANGED';
+    }
+
+    /**
+     * Event name for user manipulated monitor and caused it to change.
+     * @const {string}
+     */
+    static get MONITORS_CHANGED () {
+        return 'MONITORS_CHANGED';
+    }
+
     /**
      * Event name for report that a change was made to an extension in the toolbox.
      * @const {string}
@@ -768,11 +842,27 @@ class Runtime extends EventEmitter {
     }
 
     /**
+     * Event name for target update report.
+     * @const {string}
+     */
+    static get TARGET_UPDATE () {
+        return 'TARGET_UPDATE';
+    }
+
+    /**
      * Event name for monitors update.
      * @const {string}
      */
     static get MONITORS_UPDATE () {
         return 'MONITORS_UPDATE';
+    }
+
+    /**
+     * Event name for monitors changed.
+     * @const {string}
+     */
+    static get SOUNDS_CHANGED () {
+        return 'SOUNDS_CHANGED';
     }
 
     /**
@@ -798,7 +888,13 @@ class Runtime extends EventEmitter {
     static get EXTENSION_ADDED () {
         return 'EXTENSION_ADDED';
     }
-
+    /**
+     * Event name for reporting that an extension was added.
+     * @const {string}
+     */
+    static get COLLABORATION_EXTENSION_ADDED () {
+        return 'COLLABORATION_EXTENSION_ADDED';
+    }
     /**
      * Event name for reporting that an extension as asked for a custom field to be added
      * @const {string}
@@ -2698,6 +2794,14 @@ class Runtime extends EventEmitter {
     }
 
     /**
+     * ccw: Update the id of the editor's current operator
+     * @param {*} compilerOptions New options
+     */
+    setEditorId (id) {
+        this.editorId = id;
+    }
+
+    /**
      * tw: Update compiler options
      * @param {*} compilerOptions New options
      */
@@ -3112,12 +3216,16 @@ class Runtime extends EventEmitter {
      * Add a monitor to the state. If the monitor already exists in the state,
      * updates those properties that are defined in the given monitor record.
      * @param {!MonitorRecord} monitor Monitor to add.
+     * @param {boolean} isRemoteOperation - set to true if this is a remote operation
      */
-    requestAddMonitor (monitor) {
+    requestAddMonitor (monitor, isRemoteOperation) {
         const id = monitor.get('id');
         if (!this.requestUpdateMonitor(monitor)) { // update monitor if it exists in the state
             // if the monitor did not exist in the state, add it
             this._monitorState = this._monitorState.set(id, monitor);
+            if (!isRemoteOperation) {
+                this.emitMonitorsChanged(['add', id]);
+            }
         }
     }
 
@@ -3149,8 +3257,14 @@ class Runtime extends EventEmitter {
      * not exist in the state.
      * @param {!string} monitorId ID of the monitor to remove.
      */
-    requestRemoveMonitor (monitorId) {
-        this._monitorState = this._monitorState.delete(monitorId);
+    requestRemoveMonitor (monitorId, isRemoteOperation) {
+        const deletedMonitor = this._monitorState.get(monitorId);
+        if (deletedMonitor) {
+            this._monitorState = this._monitorState.delete(monitorId);
+            if (!isRemoteOperation) {
+                this.emitMonitorsChanged(['delete', monitorId, {spriteName: deletedMonitor.get('spriteName')}]);
+            }
+        }
     }
 
     /**
@@ -3159,6 +3273,7 @@ class Runtime extends EventEmitter {
      * @return {boolean} true if monitor exists and was updated, false otherwise
      */
     requestHideMonitor (monitorId) {
+        this.emitMonitorsChanged(['update', monitorId, {visible: false}]);
         return this.requestUpdateMonitor(new Map([
             ['id', monitorId],
             ['visible', false]
@@ -3172,6 +3287,7 @@ class Runtime extends EventEmitter {
      * @return {boolean} true if monitor exists and was updated, false otherwise
      */
     requestShowMonitor (monitorId) {
+        this.emitMonitorsChanged(['update', monitorId, {visible: true}]);
         return this.requestUpdateMonitor(new Map([
             ['id', monitorId],
             ['visible', true]
@@ -3184,6 +3300,11 @@ class Runtime extends EventEmitter {
      * @param {!string} targetId Remove all monitors with given target ID.
      */
     requestRemoveMonitorByTargetId (targetId) {
+        this._monitorState.forEach(monitor => {
+            if (monitor.get('targetId') === targetId) {
+                this.emitMonitorsChanged(['delete', monitor.get('id'), {spriteName: monitor.get('spriteName')}]);
+            }
+        });
         this._monitorState = this._monitorState.filterNot(value => value.targetId === targetId);
     }
 
@@ -3259,6 +3380,73 @@ class Runtime extends EventEmitter {
      */
     emitProjectChanged () {
         this.emit(Runtime.PROJECT_CHANGED);
+    }
+
+    /**
+     * Report that the target has changed in a way that would affect serialization
+     */
+    emitTargetBlocksChanged (targetId, blocks, ext) {
+        this.emit(Runtime.TARGET_BLOCKS_CHANGED, targetId, blocks, ext);
+    }
+
+    /**
+     * Report that the target has changed in a way that would affect serialization
+     * @param {Array<Array<string, object>>} data - An array consisting of roles that have undergone changes.
+     */
+    emitTargetSimplePropertyChanged (data) {
+        this.emit(Runtime.TARGET_SIMPLE_PROPERTY_CHANGED, data);
+    }
+
+    /**
+     * Report that a target has been renamed.
+     * @param {string} targetId The ID of the target.
+     * @param {string} newName The new name.
+     */
+    emitTargetRenamed (targetId, newName) {
+        this.emit(Runtime.TARGET_RENAMED, targetId, newName);
+    }
+
+    /**
+     * Report that the target has changed in a way that would affect serialization
+     */
+    emitTargetCommentsChanged (targetId, commentId, data) {
+        this.emit(Runtime.TARGET_COMMENTS_CHANGED, targetId, commentId, data);
+    }
+
+    /**
+     * Report that the target has changed in a way that would affect serialization
+     */
+    emitTargetCostumeChanged (id, data) {
+        this.emit(Runtime.TARGET_COSTUME_CHANGED, id, data);
+    }
+
+    /**
+     * Report that the target has changed in a way that would affect serialization
+     */
+    emitTargetCurrentCostumeChanged (index) {
+        this.emit(Runtime.TARGET_CURRENT_COSTUME_CHANGED, index);
+    }
+
+    /**
+     * Report that the target has changed in a way that would affect serialization
+     */
+    emitTargetVariablesChanged (id, data) {
+        this.emit(Runtime.TARGET_VARIABLES_CHANGED, id, data);
+    }
+
+    emitMonitorsChanged (data) {
+        this.emit(Runtime.MONITORS_CHANGED, data);
+    }
+
+    emitTargetsIndexChanged (data) {
+        this.emit(Runtime.TARGETS_INDEX_CHANGED, data);
+    }
+
+    /**
+     * Report that the monitors has changed
+     */
+    emitTargetSoundsChanged (data, key, targetId) {
+        this.emit(Runtime.SOUNDS_CHANGED, data, key, targetId);
     }
 
     /**
@@ -3352,9 +3540,12 @@ class Runtime extends EventEmitter {
         const varType = (typeof optVarType === 'string') ? optVarType : Variable.SCALAR_TYPE;
         const allVariableNames = this.getAllVarNamesOfType(varType);
         const newName = StringUtil.unusedName(variableName, allVariableNames);
-        const variable = new Variable(optVarId || uid(), newName, varType);
         const stage = this.getTargetForStage();
+        const variable = new Variable(optVarId || uid(), newName, varType, false, stage.id);
         stage.variables[variable.id] = variable;
+        this.emitTargetVariablesChanged(stage.originalTargetId,
+            [variable.id, varType, 'add', {name: newName, value: variable.value, isCloud: variable.isCloud}]
+        );
         return variable;
     }
 

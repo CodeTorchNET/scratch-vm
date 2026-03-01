@@ -203,17 +203,6 @@ class ExtensionManager {
             return false;
         }
     }
-
-    _CollaborationEmitTrigger (extensionURL){
-        const triggerData = {
-            triggerId: 'extensionLoaded',
-            data: {
-                extensionURL
-            }
-        };
-            // Dispatch the custom event for the addon to pick up
-        window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-    }
     /**
      * Load an extension by URL or internal extension ID
      * @param {string} extensionURL - the URL for the extension to load OR the ID of an internal extension
@@ -221,7 +210,9 @@ class ExtensionManager {
      */
     async loadExtensionURL (extensionURL, emit = true, additionalInfo = {}) {
         if (this.isBuiltinExtension(extensionURL)) {
-            if (emit) this._CollaborationEmitTrigger(extensionURL);
+            if (emit){
+                this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, extensionURL);
+            }
             this.loadExtensionIdSync(extensionURL, additionalInfo);
             return;
         }
@@ -236,7 +227,7 @@ class ExtensionManager {
         }
 
         if (emit) {
-            this._CollaborationEmitTrigger(extensionURL);
+            this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, extensionURL);
         }
         this.runtime.setExternalCommunicationMethod('customExtensions', true);
 

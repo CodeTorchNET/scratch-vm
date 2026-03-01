@@ -44,6 +44,8 @@ class Target extends EventEmitter {
          * @type {!Blocks}
          */
         this.blocks = blocks;
+
+        this.originalTargetId = this.id;
         /**
          * Dictionary of variables and their values for this target.
          * Key is the variable id.
@@ -269,15 +271,20 @@ class Target extends EventEmitter {
      * @param {boolean} isCloud Whether the variable to create has the isCloud flag set.
      * Additional checks are made that the variable can be created as a cloud variable.
      */
-    createVariable (id, name, type, isCloud) {
+    createVariable (id, name, type, isCloud, isRemoteOperation) {
         if (!Object.prototype.hasOwnProperty.call(this.variables, id)) {
-            const newVariable = new Variable(id, name, type, false);
+            const newVariable = new Variable(id, name, type, false, this.id);
             if (isCloud && this.isStage && this.runtime.canAddCloudVariable()) {
                 newVariable.isCloud = true;
                 this.runtime.addCloudVariable();
                 this.runtime.ioDevices.cloud.requestCreateVariable(newVariable);
             }
             this.variables[id] = newVariable;
+            if (!isRemoteOperation) {
+                this.runtime.emitTargetVariablesChanged(this.originalTargetId,
+                    [id, type, 'add', {name, value: newVariable.value, isCloud: newVariable.isCloud}]
+                );
+            }
         }
     }
 
@@ -292,8 +299,9 @@ class Target extends EventEmitter {
      * @param {number} width The width of the comment when it is full size
      * @param {number} height The height of the comment when it is full size
      * @param {boolean} minimized Whether the comment is minimized.
+     * @param {boolean} isRemoteOperation - set to true if this is a remote operation
      */
-    createComment (id, blockId, text, x, y, width, height, minimized) {
+    createComment (id, blockId, text, x, y, width, height, minimized, isRemoteOperation) {
         if (!Object.prototype.hasOwnProperty.call(this.comments, id)) {
             const newComment = new Comment(id, text, x, y,
                 width, height, minimized);
@@ -308,6 +316,10 @@ class Target extends EventEmitter {
                 }
             }
             this.comments[id] = newComment;
+
+            if (!isRemoteOperation) {
+                this.runtime.emitTargetCommentsChanged(this.originalTargetId, ['add', id, newComment]);
+            }
         }
     }
 
@@ -367,19 +379,25 @@ class Target extends EventEmitter {
      * Removes the variable with the given id from the dictionary of variables.
      * @param {string} id Id of variable to delete.
      */
-    deleteVariable (id) {
+    deleteVariable (id, isRemoteOperation) {
         if (Object.prototype.hasOwnProperty.call(this.variables, id)) {
             // Get info about the variable before deleting it
             const deletedVariableName = this.variables[id].name;
+            const deletedVariableType = this.variables[id].type;
             const deletedVariableWasCloud = this.variables[id].isCloud;
             delete this.variables[id];
+            if (!isRemoteOperation) {
+                this.runtime.emitTargetVariablesChanged(this.originalTargetId,
+                    [id, deletedVariableType, 'delete', {name: deletedVariableName}]
+                );
+            }
             if (this.runtime) {
                 if (deletedVariableWasCloud && this.isStage) {
                     this.runtime.ioDevices.cloud.requestDeleteVariable(deletedVariableName);
                     this.runtime.removeCloudVariable();
                 }
                 this.runtime.monitorBlocks.deleteBlock(id);
-                this.runtime.requestRemoveMonitor(id);
+                this.runtime.requestRemoveMonitor(id, isRemoteOperation);
             }
         }
     }
@@ -601,9 +619,12 @@ class Target extends EventEmitter {
         if (existingLocalVar) {
             newVarId = existingLocalVar.id;
         } else {
-            const newVar = new Variable(null, varName, varType);
+            const newVar = new Variable(null, varName, varType, false, sprite.id);
             newVarId = newVar.id;
             sprite.variables[newVarId] = newVar;
+            this.runtime.emitTargetVariablesChanged(sprite.originalTargetId,
+                [newVarId, varType, 'add', {name: newVar.name, value: newVar.value, isCloud: newVar.isCloud}]
+            );
         }
 
         // Merge with the local variable on the new sprite.

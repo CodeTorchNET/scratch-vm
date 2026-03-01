@@ -5,6 +5,7 @@ const {loadCostumeFromAsset} = require('../import/load-costume');
 const newBlockIds = require('../util/new-block-ids');
 const StringUtil = require('../util/string-util');
 const StageLayering = require('../engine/stage-layering');
+const uid = require('../util/uid');
 
 class Sprite {
     /**
@@ -153,12 +154,22 @@ class Sprite {
 
         newSprite.costumes = this.costumes_.map(costume => {
             const newCostume = Object.assign({}, costume);
+            Object.defineProperty(newCostume, 'id', {
+                value: uid(),
+                writable: false,
+                enumerable: true
+            });
             assetPromises.push(loadCostumeFromAsset(newCostume, this.runtime));
             return newCostume;
         });
 
         newSprite.sounds = this.sounds.map(sound => {
             const newSound = Object.assign({}, sound);
+            Object.defineProperty(newSound, 'id', {
+                value: uid(),
+                writable: false,
+                enumerable: true
+            });
             const soundAsset = sound.asset;
             assetPromises.push(loadSoundFromAsset(newSound, soundAsset, this.runtime, newSprite.soundBank));
             return newSound;

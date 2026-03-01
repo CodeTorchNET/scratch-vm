@@ -478,6 +478,13 @@ const parseScratchAssets = function (object, runtime, topLevel, zip) {
                 md5: costumeSource.baseLayerMD5,
                 skinId: null
             };
+
+            Object.defineProperty(costume, 'id', {
+                value: uid(),
+                writable: false,
+                enumerable: true
+            });
+
             const md5ext = costumeSource.baseLayerMD5;
             const idParts = StringUtil.splitFirst(md5ext, '.');
             const md5 = idParts[0];
@@ -525,6 +532,13 @@ const parseScratchAssets = function (object, runtime, topLevel, zip) {
                 md5: soundSource.md5,
                 data: null
             };
+
+            Object.defineProperty(sound, 'id', {
+                value: uid(),
+                writable: false,
+                enumerable: true
+            });
+
             const md5ext = soundSource.md5;
             const idParts = StringUtil.splitFirst(md5ext, '.');
             const md5 = idParts[0];
@@ -741,6 +755,9 @@ const parseScratchObject = function (object, runtime, extensions, topLevel, zip,
     }
     if (Object.prototype.hasOwnProperty.call(object, 'visible')) {
         target.visible = object.visible;
+    }
+    if (Object.prototype.hasOwnProperty.call(object, 'editorId')) {
+        target.editorId = object.editorId;
     }
     if (Object.prototype.hasOwnProperty.call(object, 'currentCostumeIndex')) {
         // Current costume index can sometimes be a floating

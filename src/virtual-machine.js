@@ -17,6 +17,7 @@ const RenderedTarget = require('./sprites/rendered-target');
 const Sprite = require('./sprites/sprite');
 const StringUtil = require('./util/string-util');
 const formatMessage = require('format-message');
+const MonitorRecord = require('./engine/monitor-record');
 
 const Variable = require('./engine/variable');
 const newBlockIds = require('./util/new-block-ids');
@@ -27,6 +28,7 @@ const {serializeSounds, serializeCostumes} = require('./serialization/serialize-
 require('canvas-toBlob');
 const {exportCostume} = require('./serialization/tw-costume-import-export');
 const Base64Util = require('./util/base64-util');
+const uid = require('./util/uid');
 
 const RESERVED_NAMES = ['_mouse_', '_stage_', '_edge_', '_myself_', '_random_'];
 
@@ -100,6 +102,9 @@ class VirtualMachine extends EventEmitter {
         this.runtime.on(Runtime.PROJECT_START, () => {
             this.emit(Runtime.PROJECT_START);
         });
+        this.runtime.on(Runtime.PROJECT_LOADED, () => {
+            this.emit(Runtime.PROJECT_LOADED);
+        });
         this.runtime.on(Runtime.PROJECT_RUN_START, () => {
             this.emit(Runtime.PROJECT_RUN_START);
         });
@@ -109,14 +114,44 @@ class VirtualMachine extends EventEmitter {
         this.runtime.on(Runtime.PROJECT_CHANGED, () => {
             this.emit(Runtime.PROJECT_CHANGED);
         });
+        this.runtime.on(Runtime.TARGET_BLOCKS_CHANGED, (targetId, blocks, ext) => {
+            this.emit(Runtime.TARGET_BLOCKS_CHANGED, targetId, blocks, ext);
+        });
+        this.runtime.on(Runtime.TARGET_COMMENTS_CHANGED, (targetId, commentId, data) => {
+            this.emit(Runtime.TARGET_COMMENTS_CHANGED, targetId, commentId, data);
+        });
+        this.runtime.on(Runtime.TARGET_COSTUME_CHANGED, (id, data) => {
+            this.emit(Runtime.TARGET_COSTUME_CHANGED, id, data);
+        });
+        this.runtime.on(Runtime.TARGET_CURRENT_COSTUME_CHANGED, index => {
+            this.emit(Runtime.TARGET_CURRENT_COSTUME_CHANGED, index);
+        });
+        this.runtime.on(Runtime.TARGET_VARIABLES_CHANGED, (id, data) => {
+            this.emit(Runtime.TARGET_VARIABLES_CHANGED, id, data);
+        });
+        this.runtime.on(Runtime.MONITORS_CHANGED, data => {
+            this.emit(Runtime.MONITORS_CHANGED, data);
+        });
+        this.runtime.on(Runtime.TARGETS_INDEX_CHANGED, data => {
+            this.emit(Runtime.TARGETS_INDEX_CHANGED, data);
+        });
+        this.runtime.on(Runtime.TARGET_SIMPLE_PROPERTY_CHANGED, (order, data) => {
+            this.emit(Runtime.TARGET_SIMPLE_PROPERTY_CHANGED, order, data);
+        });
         this.runtime.on(Runtime.VISUAL_REPORT, visualReport => {
             this.emit(Runtime.VISUAL_REPORT, visualReport);
         });
         this.runtime.on(Runtime.TARGETS_UPDATE, emitProjectChanged => {
             this.emitTargetsUpdate(emitProjectChanged);
         });
+        this.runtime.on(Runtime.TARGET_RENAMED, (targetId, newName) => {
+            this.emit(Runtime.TARGET_RENAMED, targetId, newName);
+        });
         this.runtime.on(Runtime.MONITORS_UPDATE, monitorList => {
             this.emit(Runtime.MONITORS_UPDATE, monitorList);
+        });
+        this.runtime.on(Runtime.SOUNDS_CHANGED, (data, key, targetId) => {
+            this.emit(Runtime.SOUNDS_CHANGED, data, key, targetId);
         });
         this.runtime.on(Runtime.BLOCK_DRAG_UPDATE, areBlocksOverGui => {
             this.emit(Runtime.BLOCK_DRAG_UPDATE, areBlocksOverGui);
@@ -126,6 +161,10 @@ class VirtualMachine extends EventEmitter {
         });
         this.runtime.on(Runtime.EXTENSION_ADDED, categoryInfo => {
             this.emit(Runtime.EXTENSION_ADDED, categoryInfo);
+        });
+        // same as EXTENSION_ADDED expect returns URL rather then ID
+        this.runtime.on(Runtime.COLLABORATION_EXTENSION_ADDED, categoryInfo => {
+            this.emit(Runtime.COLLABORATION_EXTENSION_ADDED, categoryInfo);
         });
         this.runtime.on(Runtime.EXTENSION_FIELD_ADDED, (fieldName, fieldImplementation) => {
             this.emit(Runtime.EXTENSION_FIELD_ADDED, fieldName, fieldImplementation);
@@ -348,6 +387,58 @@ class VirtualMachine extends EventEmitter {
 
     setRuntimeOptions (runtimeOptions) {
         this.runtime.setRuntimeOptions(runtimeOptions);
+    }
+
+    setEditorId (id) {
+        this.runtime.setEditorId(id);
+    }
+
+    addMonitor (monitor) {
+        const {spriteName, id, opcode, params, value, mode} = monitor;
+        const target = spriteName ? this.runtime.targets.find(t => t.sprite.name === spriteName) : null;
+        const newMonitor = {
+            id,
+            targetId: target?.id || null,
+            spriteName,
+            opcode,
+            params,
+            value,
+            mode
+        };
+        const fields = {};
+        for (const paramKey in monitor.params) {
+            const field = {
+                name: paramKey,
+                value: monitor.params[paramKey]
+            };
+            fields[paramKey] = field;
+        }
+        const monitorBlock = {
+            id: monitor.id,
+            opcode: monitor.opcode,
+            inputs: {}, // Assuming that monitor blocks don't have droppable fields
+            fields: fields,
+            topLevel: true,
+            next: null,
+            parent: null,
+            shadow: false,
+            x: 0,
+            y: 0,
+            isMonitored: true,
+            targetId: monitor.targetId
+        };
+        if (monitor.opcode === 'data_variable') {
+            const field = monitorBlock.fields.VARIABLE;
+            field.id = monitor.id;
+            field.variableType = Variable.SCALAR_TYPE;
+        } else if (monitor.opcode === 'data_listcontents') {
+            const field = monitorBlock.fields.LIST;
+            field.id = monitor.id;
+            field.variableType = Variable.LIST_TYPE;
+        }
+        
+        this.runtime.monitorBlocks.createBlock(monitorBlock);
+        this.runtime.requestAddMonitor(MonitorRecord(newMonitor));
     }
 
     setCompilerOptions (compilerOptions) {
@@ -836,9 +927,10 @@ class VirtualMachine extends EventEmitter {
      * @param {ImportedExtensionsInfo} extensions - metadata about extensions used by these targets
      * @param {boolean} wholeProject - set to true if installing a whole project, as opposed to a single sprite.
      * @param {object} additionalInfo - data to be passed on to very special extensions (EG: customAchievements)
+     * @param {boolean} isRemoteOperation - set to true if this is a remote operation
      * @returns {Promise} resolved once targets have been installed
      */
-    async installTargets (targets, extensions, wholeProject, additionalInfo = {}) {
+    async installTargets (targets, extensions, wholeProject, additionalInfo = {}, isRemoteOperation) {
         await this.extensionManager.allAsyncExtensionsLoaded();
 
         targets = targets.filter(target => !!target);
@@ -857,11 +949,13 @@ class VirtualMachine extends EventEmitter {
                 delete target.layerOrder;
             });
 
-            // Select the first target for editing, e.g., the first sprite.
-            if (wholeProject && (targets.length > 1)) {
-                this.editingTarget = targets[1];
-            } else {
-                this.editingTarget = targets[0];
+            if (!isRemoteOperation){
+                // Select the first target for editing, e.g., the first sprite.
+                if (wholeProject && (targets.length > 1)) {
+                    this.editingTarget = targets[1];
+                } else {
+                    this.editingTarget = targets[0];
+                }
             }
 
             if (!wholeProject) {
@@ -875,8 +969,15 @@ class VirtualMachine extends EventEmitter {
             // Update the VM user's knowledge of targets and blocks on the workspace.
             this.emitTargetsUpdate(false /* Don't emit project change */);
             this.emitWorkspaceUpdate();
-            this.runtime.setEditingTarget(this.editingTarget);
+            if (!isRemoteOperation){
+                this.runtime.setEditingTarget(this.editingTarget);
+            }
             this.runtime.ioDevices.cloud.setStage(this.runtime.getTargetForStage());
+            if (!isRemoteOperation && !wholeProject) {
+                const sb3 = require('./serialization/sb3');
+                const sprite = sb3.serialize(this.runtime, targets[0].id);
+                return [this.runtime.targets.length, sprite];
+            }
         });
     }
 
@@ -884,10 +985,10 @@ class VirtualMachine extends EventEmitter {
      * Add a sprite, this could be .sprite2 or .sprite3. Unpack and validate
      * such a file first.
      * @param {string | object} input A json string, object, or ArrayBuffer representing the project to load.
-     * @return {!Promise} Promise that resolves after targets are installed.
+     * @param {?boolean} isRemoteOperation Whether to change editing target
+    * @return {!Promise} Promise that resolves after targets are installed.
      */
-    addSprite (input, emit = true) {
-        const originalInput = input;
+    addSprite (input, isRemoteOperation) {
         const errorPrefix = 'Sprite Upload Error:';
         if (typeof input === 'object' && !(input instanceof ArrayBuffer) &&
           !ArrayBuffer.isView(input)) {
@@ -910,20 +1011,11 @@ class VirtualMachine extends EventEmitter {
                 resolve(res);
             });
         });
-        if (emit === true) {
-            const triggerData = {
-                triggerId: 'spriteAdded',
-                data: {
-                    spriteData: originalInput
-                }
-            };
-                // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
 
         return validationPromise
             .then(validatedInput => {
                 const projectVersion = validatedInput[0].projectVersion;
+                validatedInput[0].editorId = this.runtime.editorId;
                 if (projectVersion === 2) {
                     return this._addSprite2(validatedInput[0], validatedInput[1]);
                 }
@@ -934,7 +1026,12 @@ class VirtualMachine extends EventEmitter {
                 // eslint-disable-next-line prefer-promise-reject-errors
                 return Promise.reject(`${errorPrefix} Unable to verify sprite version.`);
             })
-            .then(() => this.runtime.emitProjectChanged())
+            .then(spriteInfo => {
+                if (spriteInfo && !isRemoteOperation) {
+                    this.emit('ADD_SPRITE', ...spriteInfo);
+                }
+                this.runtime.emitProjectChanged();
+            })
             .catch(error => {
                 // Intentionally rejecting here (want errors to be handled by caller)
                 if (Object.prototype.hasOwnProperty.call(error, 'validationError')) {
@@ -950,30 +1047,43 @@ class VirtualMachine extends EventEmitter {
      * Add a single sprite from the "Sprite2" (i.e., SB2 sprite) format.
      * @param {object} sprite Object representing 2.0 sprite to be added.
      * @param {?ArrayBuffer} zip Optional zip of assets being referenced by json
+     * @param {?Boolean} isRemoteOperation Whether to change editing target
      * @returns {Promise} Promise that resolves after the sprite is added
      */
-    _addSprite2 (sprite, zip) {
+    _addSprite2 (sprite, zip, isRemoteOperation) {
         // Validate & parse
 
         const sb2 = require('./serialization/sb2');
         return sb2.deserialize(sprite, this.runtime, true, zip)
             .then(({targets, extensions}) =>
-                this.installTargets(targets, extensions, false));
+                this.installTargets(targets, extensions, false, {}, isRemoteOperation));
     }
 
     /**
      * Add a single sb3 sprite.
      * @param {object} sprite Object rperesenting 3.0 sprite to be added.
      * @param {?ArrayBuffer} zip Optional zip of assets being referenced by target json
+     * @param {?Boolean} isRemoteOperation Whether to change editing target
      * @returns {Promise} Promise that resolves after the sprite is added
      */
-    _addSprite3 (sprite, zip) {
+    _addSprite3 (sprite, zip, isRemoteOperation) {
         // Validate & parse
         const sb3 = require('./serialization/sb3');
         return sb3
             .deserialize(sprite, this.runtime, zip, true)
-            .then(({targets, extensions}) => this.installTargets(targets, extensions, false));
+            .then(({targets, extensions}) => this.installTargets(targets, extensions, false, {}, isRemoteOperation));
     }
+
+    _ensureImmutableId = obj => {
+        if (!obj.id) {
+            Object.defineProperty(obj, 'id', {
+                value: uid(),
+                writable: false,
+                enumerable: true
+            });
+        }
+    };
+
 
     /**
      * Add a costume to the current editing target.
@@ -987,23 +1097,12 @@ class VirtualMachine extends EventEmitter {
      * @param {string} optVersion - if this is 2, load costume as sb2, otherwise load costume as sb3.
      * @returns {?Promise} - a promise that resolves when the costume has been added
      */
-    addCostume (md5ext, costumeObject, optTargetId, optVersion, emit = true) {
+    addCostume (md5ext, costumeObject, optTargetId, optVersion) {
+        this._ensureImmutableId(costumeObject);
+
         const target = optTargetId ? this.runtime.getTargetById(optTargetId) :
             this.editingTarget;
         if (target) {
-            if (emit){
-                const triggerData = {
-                    triggerId: 'costumeAdded',
-                    data: {
-                        md5ext,
-                        costumeObject: structuredClone(costumeObject),
-                        targetId: target.getName(),
-                        optVersion
-                    }
-                };
-                // Dispatch the custom event for the addon to pick up
-                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-            }
             return loadCostume(md5ext, costumeObject, this.runtime, optVersion).then(() => {
                 target.addCostume(costumeObject);
                 target.setCostume(
@@ -1038,27 +1137,16 @@ class VirtualMachine extends EventEmitter {
     /**
      * Duplicate the costume at the given index. Add it at that index + 1.
      * @param {!int} costumeIndex Index of costume to duplicate
-     * @param {Target} edittingTarget - the target to duplicate the costume on (only used by the collaboration addon)
-     * @param {boolean} emit - whether to emit the costumeDuplicated event (only used by the collaboration addon)
      * @returns {?Promise} - a promise that resolves when the costume has been decoded and added
      */
-    duplicateCostume (costumeIndex, edittingTarget = this.editingTarget, emit = true) {
-        if (emit){
-            const triggerData = {
-                triggerId: 'costumeDuplicated',
-                data: {
-                    costumeIndex,
-                    targetId: this.editingTarget.getName()
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
-        const originalCostume = edittingTarget.getCostumes()[costumeIndex];
+    duplicateCostume (costumeIndex) {
+        const originalCostume = this.editingTarget.getCostumes()[costumeIndex];
         const clone = Object.assign({}, originalCostume);
+        delete clone.id;
+        this._ensureImmutableId(clone);
         const md5ext = `${clone.assetId}.${clone.dataFormat}`;
         return loadCostume(md5ext, clone, this.runtime).then(() => {
-            edittingTarget.addCostume(clone, costumeIndex + 1);
+            this.editingTarget.addCostume(clone, costumeIndex + 1);
             this.editingTarget.setCostume(costumeIndex + 1);
             this.emitTargetsUpdate();
         });
@@ -1069,22 +1157,23 @@ class VirtualMachine extends EventEmitter {
      * @param {!int} soundIndex Index of sound to duplicate
      * @returns {?Promise} - a promise that resolves when the sound has been decoded and added
      */
-    duplicateSound (soundIndex, edittingTarget = this.editingTarget, emit = true) {
-        if (emit){
-            const triggerData = {
-                triggerId: 'soundDuplicated',
-                data: {
-                    soundIndex,
-                    targetId: this.editingTarget.getName()
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
-        const originalSound = edittingTarget.getSounds()[soundIndex];
+    duplicateSound (soundIndex) {
+        const originalSound = this.editingTarget.getSounds()[soundIndex];
         const clone = Object.assign({}, originalSound);
-        return loadSound(clone, this.runtime, edittingTarget.sprite.soundBank).then(() => {
-            edittingTarget.addSound(clone, soundIndex + 1);
+        delete clone.id;
+        this._ensureImmutableId(clone);
+        return loadSound(
+            clone,
+            this.runtime,
+            this.editingTarget.sprite.soundBank
+        ).then(() => {
+            const target = this.editingTarget;
+            const index = soundIndex + 1;
+            target.addSound(clone, index);
+
+            this.runtime.emitTargetSoundsChanged(
+                target.originalTargetId, ['add', clone.id, clone]
+            );
             this.emitTargetsUpdate();
         });
     }
@@ -1095,16 +1184,6 @@ class VirtualMachine extends EventEmitter {
      * @param {string} newName - the desired new name of the costume (will be modified if already in use).
      */
     renameCostume (costumeIndex, newName) {
-        const triggerData = {
-            triggerId: 'costumeRenamed',
-            data: {
-                costumeIndex,
-                newName,
-                targetId: this.editingTarget.getName()
-            }
-        };
-        // Dispatch the custom event for the addon to pick up
-        window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
         this.editingTarget.renameCostume(costumeIndex, newName);
         this.emitTargetsUpdate();
     }
@@ -1120,15 +1199,6 @@ class VirtualMachine extends EventEmitter {
         if (deletedCostume) {
             const target = this.editingTarget;
             this.runtime.emitProjectChanged();
-            const triggerData = {
-                triggerId: 'costumeDeleted',
-                data: {
-                    costumeIndex,
-                    targetId: this.editingTarget.getName()
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
             return () => {
                 target.addCostume(deletedCostume);
                 this.emitTargetsUpdate();
@@ -1143,23 +1213,19 @@ class VirtualMachine extends EventEmitter {
      * @param {string} optTargetId - the id of the target to add to, if not the editing target.
      * @returns {?Promise} - a promise that resolves when the sound has been decoded and added
      */
-    addSound (soundObject, optTargetId, emit = true) {
-        const target = optTargetId ? this.runtime.getTargetById(optTargetId) :
+    addSound (soundObject, optTargetId) {
+        this._ensureImmutableId(soundObject);
+        const target = optTargetId ?
+            this.runtime.getTargetById(optTargetId) :
             this.editingTarget;
         if (target) {
-            if (emit){
-                const triggerData = {
-                    triggerId: 'soundAdded',
-                    data: {
-                        soundObject: structuredClone(soundObject),
-                        targetId: target.getName()
-                    }
-                };
-                // Dispatch the custom event for the addon to pick up
-                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-            }
-            return loadSound(soundObject, this.runtime, target.sprite.soundBank).then(() => {
+            return loadSound(
+                soundObject,
+                this.runtime,
+                target.sprite.soundBank
+            ).then(() => {
                 target.addSound(soundObject);
+                this.runtime.emitTargetSoundsChanged(target.originalTargetId, ['add', soundObject.id, soundObject]);
                 this.emitTargetsUpdate();
             });
         }
@@ -1173,16 +1239,6 @@ class VirtualMachine extends EventEmitter {
      * @param {string} newName - the desired new name of the sound (will be modified if already in use).
      */
     renameSound (soundIndex, newName) {
-        const triggerData = {
-            triggerId: 'soundRenamed',
-            data: {
-                soundIndex,
-                newName,
-                targetId: this.editingTarget.getName()
-            }
-        };
-        // Dispatch the custom event for the addon to pick up
-        window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
         this.editingTarget.renameSound(soundIndex, newName);
         this.emitTargetsUpdate();
     }
@@ -1206,12 +1262,17 @@ class VirtualMachine extends EventEmitter {
      * @param {AudioBuffer} newBuffer - new audio buffer for the audio engine.
      * @param {ArrayBuffer} soundEncoding - the new (wav) encoded sound to be stored
      */
-    updateSoundBuffer (soundIndex, newBuffer, soundEncoding, edittingTarget = this.editingTarget) {
-        const sound = edittingTarget.sprite.sounds[soundIndex];
+    updateSoundBuffer (soundIndex, newBuffer, soundEncoding, targetId) {
+        const target = targetId ? this.runtime.getTargetById(targetId) : this.editingTarget;
+        if (!target) {
+            throw new Error('No target with the provided id.');
+        }
+        const sound = target.sprite.sounds[soundIndex];
         if (sound && sound.broken) delete sound.broken;
         const id = sound ? sound.soundId : null;
         if (id && this.runtime && this.runtime.audioEngine) {
-            edittingTarget.sprite.soundBank.getSoundPlayer(id).buffer = newBuffer;
+            target.sprite.soundBank.getSoundPlayer(id).buffer =
+                newBuffer;
         }
         // Update sound in runtime
         if (soundEncoding) {
@@ -1235,6 +1296,7 @@ class VirtualMachine extends EventEmitter {
             sound.sampleCount = newBuffer.length;
             sound.rate = newBuffer.sampleRate;
         }
+        this.runtime.emitTargetSoundsChanged(target.originalTargetId, ['update', sound.id, sound]);
         // If soundEncoding is null, it's because gui had a problem
         // encoding the updated sound. We don't want to store anything in this
         // case, and gui should have logged an error.
@@ -1252,18 +1314,12 @@ class VirtualMachine extends EventEmitter {
         const target = this.editingTarget;
         const deletedSound = this.editingTarget.deleteSound(soundIndex);
         if (deletedSound) {
+            this.runtime.emitTargetSoundsChanged(target.originalTargetId, ['delete', deletedSound.id]);
+
             this.runtime.emitProjectChanged();
-            const triggerData = {
-                triggerId: 'soundDeleted',
-                data: {
-                    soundIndex,
-                    targetId: this.editingTarget.getName()
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
             const restoreFun = () => {
                 target.addSound(deletedSound);
+                this.runtime.emitTargetSoundsChanged(target.originalTargetId, ['add', deletedSound.id, deletedSound]);
                 this.emitTargetsUpdate();
             };
             return restoreFun;
@@ -1318,20 +1374,22 @@ class VirtualMachine extends EventEmitter {
      * @param {!number} rotationCenterY y of point about which the costume rotates, relative to its upper left corner
      * @param {!number} bitmapResolution 1 for bitmaps that have 1 pixel per unit of stage,
      *     2 for double-resolution bitmaps
+     * @param {string} targetId ID of a target.
      */
-    // eslint-disable-next-line max-len
-    updateBitmap (costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution, edittingTarget = this.editingTarget) {
+    updateBitmap (costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution, targetId) {
         return this._updateBitmap(
-            edittingTarget.getCostumes()[costumeIndex],
+            this.editingTarget.getCostumes()[costumeIndex],
             bitmap,
             rotationCenterX,
             rotationCenterY,
-            bitmapResolution
+            bitmapResolution,
+            targetId
         );
     }
 
-    _updateBitmap (costume, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) {
+    _updateBitmap (costume, bitmap, rotationCenterX, rotationCenterY, bitmapResolution, targetId) {
         if (!(costume && this.runtime && this.runtime.renderer)) return;
+        const target = targetId ? this.runtime.getTargetById(targetId) : this.editingTarget;
         if (costume && costume.broken) delete costume.broken;
 
         costume.rotationCenterX = rotationCenterX;
@@ -1373,10 +1431,20 @@ class VirtualMachine extends EventEmitter {
                 );
                 costume.assetId = costume.asset.assetId;
                 costume.md5 = `${costume.assetId}.${costume.dataFormat}`;
+                this.runtime.emitTargetCostumeChanged(target.originalTargetId,
+                    ['update', costume.id, {
+                        assetId: costume.assetId,
+                        bitmapResolution: costume.bitmapResolution,
+                        dataFormat: costume.dataFormat,
+                        md5ext: costume.md5,
+                        name: costume.name,
+                        rotationCenterX: costume.rotationCenterX,
+                        rotationCenterY: costume.rotationCenterY
+                    }]);
                 this.emitTargetsUpdate();
             });
             // Bitmaps with a zero width or height return null for their blob
-            if (blob){
+            if (blob) {
                 reader.readAsArrayBuffer(blob);
             }
         });
@@ -1388,17 +1456,20 @@ class VirtualMachine extends EventEmitter {
      * @param {string} svg - new SVG for the renderer.
      * @param {number} rotationCenterX x of point about which the costume rotates, relative to its upper left corner
      * @param {number} rotationCenterY y of point about which the costume rotates, relative to its upper left corner
+     * @param {string} targetId ID of a target.
      */
-    updateSvg (costumeIndex, svg, rotationCenterX, rotationCenterY, edittingTarget = this.editingTarget) {
+    updateSvg (costumeIndex, svg, rotationCenterX, rotationCenterY, targetId) {
         return this._updateSvg(
-            edittingTarget.getCostumes()[costumeIndex],
+            this.editingTarget.getCostumes()[costumeIndex],
             svg,
             rotationCenterX,
-            rotationCenterY
+            rotationCenterY,
+            targetId
         );
     }
 
-    _updateSvg (costume, svg, rotationCenterX, rotationCenterY) {
+    _updateSvg (costume, svg, rotationCenterX, rotationCenterY, targetId) {
+        const target = targetId ? this.runtime.getTargetById(targetId) : this.editingTarget;
         if (costume && costume.broken) delete costume.broken;
         if (costume && this.runtime && this.runtime.renderer) {
             costume.rotationCenterX = rotationCenterX;
@@ -1414,12 +1485,22 @@ class VirtualMachine extends EventEmitter {
         costume.asset = storage.createAsset(
             storage.AssetType.ImageVector,
             costume.dataFormat,
-            (new _TextEncoder()).encode(svg),
+            new _TextEncoder().encode(svg),
             null,
             true // generate md5
         );
         costume.assetId = costume.asset.assetId;
         costume.md5 = `${costume.assetId}.${costume.dataFormat}`;
+        const {assetId, bitmapResolution, dataFormat, md5, name, id} = costume;
+        this.runtime.emitTargetCostumeChanged(target.originalTargetId, ['update', id, {
+            assetId,
+            bitmapResolution,
+            dataFormat,
+            md5ext: md5,
+            name,
+            rotationCenterX,
+            rotationCenterY
+        }]);
         this.emitTargetsUpdate();
     }
 
@@ -1433,18 +1514,7 @@ class VirtualMachine extends EventEmitter {
      * @property {number} [bitmapResolution] - the resolution scale for a bitmap backdrop.
      * @returns {?Promise} - a promise that resolves when the backdrop has been added
      */
-    addBackdrop (md5ext, backdropObject, emit = true) {
-        if (emit){
-            const triggerData = {
-                triggerId: 'backdropAdded',
-                data: {
-                    md5ext,
-                    backdropObject: structuredClone(backdropObject)
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
+    addBackdrop (md5ext, backdropObject) {
         return loadCostume(md5ext, backdropObject, this.runtime).then(() => {
             const stage = this.runtime.getTargetForStage();
             stage.addCostume(backdropObject);
@@ -1457,8 +1527,9 @@ class VirtualMachine extends EventEmitter {
      * Rename a sprite.
      * @param {string} targetId ID of a target whose sprite to rename.
      * @param {string} newName New name of the sprite.
+     * @param {boolean} [sendNameChangedEvent = true] whether to send an event when the sprite name changes.
      */
-    renameSprite (targetId, newName, emit = true) {
+    renameSprite (targetId, newName, sendNameChangedEvent = true) {
         const target = this.runtime.getTargetById(targetId);
         if (target) {
             if (!target.isSprite()) {
@@ -1481,20 +1552,19 @@ class VirtualMachine extends EventEmitter {
                 const allTargets = this.runtime.targets;
                 for (let i = 0; i < allTargets.length; i++) {
                     const currTarget = allTargets[i];
-                    currTarget.blocks.updateAssetName(oldName, newName, 'sprite');
+                    currTarget.blocks.updateAssetName(
+                        oldName,
+                        newName,
+                        'sprite',
+                        currTarget.originalTargetId
+                    );
                 }
-                if (emit === true) {
-                    const triggerData = {
-                        triggerId: 'spriteRenamed',
-                        data: {
-                            targetId: oldName,
-                            spriteName: newUnusedName
-                        }
-                    };
-                        // Dispatch the custom event for the addon to pick up
-                    window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+                if (newUnusedName !== oldName) {
+                    if (sendNameChangedEvent) {
+                        this.runtime.emitTargetRenamed(targetId, newUnusedName);
+                    }
+                    this.emitTargetsUpdate();
                 }
-                if (newUnusedName !== oldName) this.emitTargetsUpdate();
             }
         } else {
             throw new Error('No target with the provided id.');
@@ -1504,14 +1574,16 @@ class VirtualMachine extends EventEmitter {
     /**
      * Delete a sprite and all its clones.
      * @param {string} targetId ID of a target whose sprite to delete.
+     * @param {boolean} isRemoteOperation Whether this is a remote operation.
      * @return {Function} Returns a function to restore the sprite that was deleted
      */
-    deleteSprite (targetId, emit = true) {
+    deleteSprite (targetId, isRemoteOperation) {
         const target = this.runtime.getTargetById(targetId);
 
-        const targetName = target ? target.getName() : null;
         if (target) {
-            const targetIndexBeforeDelete = this.runtime.targets.map(t => t.id).indexOf(target.id);
+            const targetIndexBeforeDelete = this.runtime.targets
+                .map(t => t.id)
+                .indexOf(target.id);
             if (!target.isSprite()) {
                 throw new Error('Cannot delete non-sprite targets.');
             }
@@ -1519,8 +1591,14 @@ class VirtualMachine extends EventEmitter {
             if (!sprite) {
                 throw new Error('No sprite associated with this target.');
             }
+            if (!isRemoteOperation) {
+                this.emit('DELETE_SPRITE', targetId);
+            }
             const spritePromise = this.exportSprite(targetId, 'uint8array');
-            const restoreSprite = () => spritePromise.then(spriteBuffer => this.addSprite(spriteBuffer));
+            const restoreSprite = () =>
+                spritePromise.then(spriteBuffer =>
+                    this.addSprite(spriteBuffer)
+                );
             // Remove monitors from the runtime state and remove the
             // target-specific monitored blocks (e.g. local variables)
             target.deleteMonitors();
@@ -1531,23 +1609,18 @@ class VirtualMachine extends EventEmitter {
                 this.runtime.disposeTarget(sprite.clones[i]);
                 // Ensure editing target is switched if we are deleting it.
                 if (clone === currentEditingTarget) {
-                    const nextTargetIndex = Math.min(this.runtime.targets.length - 1, targetIndexBeforeDelete);
-                    if (this.runtime.targets.length > 0){
-                        this.setEditingTarget(this.runtime.targets[nextTargetIndex].id);
+                    const nextTargetIndex = Math.min(
+                        this.runtime.targets.length - 1,
+                        targetIndexBeforeDelete
+                    );
+                    if (this.runtime.targets.length > 0) {
+                        this.setEditingTarget(
+                            this.runtime.targets[nextTargetIndex].id
+                        );
                     } else {
                         this.editingTarget = null;
                     }
                 }
-            }
-            if (emit){
-                const triggerData = {
-                    triggerId: 'spriteDeleted',
-                    data: {
-                        targetId: targetName
-                    }
-                };
-                // Dispatch the custom event for the addon to pick up
-                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
             }
             // Sprite object should be deleted by GC.
             this.emitTargetsUpdate();
@@ -1563,7 +1636,7 @@ class VirtualMachine extends EventEmitter {
      * @returns {Promise} Promise that resolves when duplicated target has
      *     been added to the runtime.
      */
-    duplicateSprite (targetId, emit = true) {
+    duplicateSprite (targetId) {
         const target = this.runtime.getTargetById(targetId);
         if (!target) {
             throw new Error('No target with the provided id.');
@@ -1571,16 +1644,6 @@ class VirtualMachine extends EventEmitter {
             throw new Error('Cannot duplicate non-sprite targets.');
         } else if (!target.sprite) {
             throw new Error('No sprite associated with this target.');
-        }
-        if (emit){
-            const triggerData = {
-                triggerId: 'spriteDuplicated',
-                data: {
-                    targetId: target.getName()
-                }
-            };
-                // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
         }
         return target.duplicate().then(newTarget => {
             this.runtime.addTarget(newTarget);
@@ -1662,7 +1725,8 @@ class VirtualMachine extends EventEmitter {
      */
     blockListener (e) {
         if (this.editingTarget) {
-            this.editingTarget.blocks.blocklyListen(e);
+            if (e.group === 'yjs-remote-sync') return;
+            this.editingTarget.blocks.blocklyListen(e, 'default');
         }
     }
 
@@ -1671,7 +1735,7 @@ class VirtualMachine extends EventEmitter {
      * @param {!Blockly.Event} e Any Blockly event.
      */
     flyoutBlockListener (e) {
-        this.runtime.flyoutBlocks.blocklyListen(e);
+        this.runtime.flyoutBlocks.blocklyListen(e, 'flyout');
     }
 
     /**
@@ -1682,7 +1746,7 @@ class VirtualMachine extends EventEmitter {
         // Filter events by type, since monitor blocks only need to listen to these events.
         // Monitor blocks shouldn't be destroyed when flyout blocks are deleted.
         if (['create', 'change'].indexOf(e.type) !== -1) {
-            this.runtime.monitorBlocks.blocklyListen(e);
+            this.runtime.monitorBlocks.blocklyListen(e, 'monitor');
         }
     }
 
@@ -1694,7 +1758,7 @@ class VirtualMachine extends EventEmitter {
         // Filter events by type, since blocks only needs to listen to these
         // var events.
         if (['var_create', 'var_rename', 'var_delete'].indexOf(e.type) !== -1) {
-            this.runtime.getTargetForStage().blocks.blocklyListen(e);
+            this.runtime.getTargetForStage().blocks.blocklyListen(e, 'variable');
         }
     }
 
@@ -1729,6 +1793,152 @@ class VirtualMachine extends EventEmitter {
     }
 
     /**
+     * Serialize the given target. Only serialize properties that are necessary
+     * for saving and loading this target.
+     * @param {object} target The target to be serialized.
+     * @param {Set} extensions A set of extensions to add extension IDs to
+     * @return {object} A serialized representation of the given target.
+     */
+    serializeTarget (target, extensions) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.serializeTarget(target, extensions);
+    }
+
+    /**
+     * Serialize the given blocks object (representing all the blocks for the target
+     * currently being serialized.)
+     * @param {object} blocks The blocks to be serialized
+     * @return {Array} An array of the serialized blocks with compressed inputs and
+     * compressed primitives and the list of all extension IDs present
+     * in the serialized blocks.
+     */
+    serializeBlocks (blocks) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.serializeBlocks(blocks);
+    }
+
+    /**
+     * Covnert serialized INPUT and FIELD primitives back to hydrated block templates.
+     * Should be able to deserialize a format that has already been deserialized.  The only
+     * "east" path to adding new targets/code requires going through deserialize, so it should
+     * work with pre-parsed deserialized blocks.
+     *
+     * @param {object} blocks Serialized SB3 "blocks" property of a target. Will be mutated.
+     * @return {object} input is modified and returned
+     */
+    deserializeBlocks (blocks) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.deserializeBlocks(blocks);
+    }
+    
+    serializeVariables (variables) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.serializeVariables(variables);
+    }
+
+    serializeMonitors (monitors) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.serializeMonitors(monitors, this.runtime);
+    }
+
+    deserializeMonitor (monitorData) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.deserializeMonitor(monitorData, this.runtime, this.runtime.targets);
+    }
+
+    serializeComments (comments) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.serializeComments(comments);
+    }
+
+    serializeComment (comment) {
+        const serializedComment = Object.create(null);
+        serializedComment.blockId = comment.blockId;
+        serializedComment.x = comment.x;
+        serializedComment.y = comment.y;
+        serializedComment.width = comment.width;
+        serializedComment.height = comment.height;
+        serializedComment.minimized = comment.minimized;
+        serializedComment.text = comment.text;
+        return serializedComment;
+    }
+
+    serializeSound (sound) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.serializeSound(sound);
+    }
+
+    deserializeSound (soundSource) {
+        const sound = {
+            assetId: soundSource.assetId,
+            format: soundSource.format,
+            rate: soundSource.rate,
+            sampleCount: soundSource.sampleCount,
+            name: soundSource.name,
+            // TODO we eventually want this property to be called md5ext,
+            // but there are many things relying on this particular name at the
+            // moment, so this translation is very important
+            md5: soundSource.md5ext,
+            dataFormat: soundSource.dataFormat,
+            data: null
+        };
+        const sb3 = require('./serialization/sb3');
+        return sb3.deserializeSound(sound, this.runtime).then(() => sound);
+    }
+
+    /**
+     * Deserialize the given block fields.
+     * @param {object} fields The fields to be deserialized
+     * @return {object} The deserialized and uncompressed block fields.
+     */
+    deserializeFields (fields) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.deserializeBlocks(fields);
+    }
+
+    /**
+     * Deserialize the given block inputs.
+     * @param {object} inputs The inputs to deserialize.
+     * @param {string} parentId The block id of the parent block
+     * @param {object} blocks The object representing the entire set of blocks currently
+     * in the process of getting deserialized.
+     * @return {object} The deserialized and uncompressed inputs.
+     */
+    deserializeInputs (inputs, parentId, blocks) {
+        const sb3 = require('./serialization/sb3');
+        return sb3.deserializeInputs(inputs, parentId, blocks);
+    }
+
+    setTargetBlocks (blocks, targetId) {
+        const sb3 = require('./serialization/sb3');
+        const target = this.runtime.getTargetById(targetId);
+        
+        const copiedBlocks = JSON.parse(JSON.stringify(blocks));
+        const extensionIDs = new Set(
+            copiedBlocks
+                .map(b => sb3.getExtensionIdForOpcode(b.opcode))
+                .filter(id => !!id) // Remove ids that do not exist
+                .filter(id => !this.extensionManager.isExtensionLoaded(id)) // and remove loaded extensions
+        );
+
+        // Create an array promises for extensions to load
+        const extensionPromises = Array.from(extensionIDs, id =>
+            this.extensionManager.loadExtensionURL(id)
+        );
+        return Promise.all(extensionPromises).then(() => {
+            copiedBlocks.forEach(block => {
+                if (target.blocks._blocks[block.id]) {
+                    target.blocks.updateBlock({...block}, 'default');
+                } else {
+                    target.blocks.createBlock(block);
+                }
+                
+            });
+            target.blocks.updateTargetSpecificBlocks(target.isStage);
+        });
+    }
+
+    /**
      * @param {Block[]} blockObjects
      * @returns {object}
      */
@@ -1747,27 +1957,12 @@ class VirtualMachine extends EventEmitter {
      * shared from that target. This is needed for resolving any potential variable conflicts.
      * @return {!Promise} Promise that resolves when the extensions and blocks have been added.
      */
-    shareBlocksToTarget (blocks, targetId, optFromTargetId, emit = true) {
+    shareBlocksToTarget (blocks, targetId, optFromTargetId) {
         const sb3 = require('./serialization/sb3');
 
         const {blocks: copiedBlocks, extensionURLs} = sb3.deserializeStandaloneBlocks(blocks);
-        if (emit){ // do not change block ids if the collaboration addon is the one calling this
-            newBlockIds(copiedBlocks);
-        }
+        newBlockIds(copiedBlocks);
         const target = this.runtime.getTargetById(targetId);
-
-        if (emit === true) {
-            const triggerData = {
-                triggerId: 'shareBlocksToTarget',
-                data: {
-                    blocks: copiedBlocks, // send the blocks with new ids
-                    targetId: targetId,
-                    optFromTargetId: optFromTargetId
-                }
-            };
-                // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
 
         if (optFromTargetId) {
             // If the blocks are being shared from another target,
@@ -1787,6 +1982,9 @@ class VirtualMachine extends EventEmitter {
             copiedBlocks.forEach(block => {
                 target.blocks.createBlock(block);
             });
+            if (copiedBlocks.length) {
+                this.runtime.emitTargetBlocksChanged(targetId, ['add', copiedBlocks]);
+            }
             target.blocks.updateTargetSpecificBlocks(target.isStage);
         });
     }
@@ -1798,21 +1996,10 @@ class VirtualMachine extends EventEmitter {
      * @param {!string} targetId Id of target to add the costume.
      * @return {Promise} Promise that resolves when the new costume has been loaded.
      */
-    shareCostumeToTarget (costumeIndex, targetId, editingTarget = this.editingTarget, emit = true) {
-        if (emit) {
-            const triggerData = {
-                triggerId: 'costumeShared',
-                data: {
-                    costumeIndex,
-                    targetId: this.runtime.getTargetById(targetId).getName(),
-                    editingTargetId: editingTarget.getName()
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
-        const originalCostume = editingTarget.getCostumes()[costumeIndex];
+    shareCostumeToTarget (costumeIndex, targetId) {
+        const originalCostume = this.editingTarget.getCostumes()[costumeIndex];
         const clone = Object.assign({}, originalCostume);
+        this._ensureImmutableId(clone);
         const md5ext = `${clone.assetId}.${clone.dataFormat}`;
         return loadCostume(md5ext, clone, this.runtime).then(() => {
             const target = this.runtime.getTargetById(targetId);
@@ -1831,28 +2018,24 @@ class VirtualMachine extends EventEmitter {
      * @param {!string} targetId Id of target to add the sound.
      * @return {Promise} Promise that resolves when the new sound has been loaded.
      */
-    shareSoundToTarget (soundIndex, targetId, editingTarget = this.editingTarget, emit = true) {
-        if (emit) {
-            const triggerData = {
-                triggerId: 'soundShared',
-                data: {
-                    soundIndex,
-                    targetId: this.runtime.getTargetById(targetId).getName(),
-                    editingTargetId: editingTarget.getName()
-                }
-            };
-            // Dispatch the custom event for the addon to pick up
-            window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
-        }
-        const originalSound = editingTarget.getSounds()[soundIndex];
+    shareSoundToTarget (soundIndex, targetId) {
+        const originalSound = this.editingTarget.getSounds()[soundIndex];
         const clone = Object.assign({}, originalSound);
+        this._ensureImmutableId(clone);
         const target = this.runtime.getTargetById(targetId);
-        return loadSound(clone, this.runtime, target.sprite.soundBank).then(() => {
-            if (target) {
-                target.addSound(clone);
-                this.emitTargetsUpdate();
-            }
-        });
+        if (target) {
+            return loadSound(clone, this.runtime, target.sprite.soundBank).then(
+                () => {
+                    if (this.runtime.getTargetById(targetId)) {
+                        target.addSound(clone);
+                        this.runtime.emitTargetSoundsChanged(target.originalTargetId,
+                            ['add', clone.id, clone]
+                        );
+                        this.emitTargetsUpdate();
+                    }
+                }
+            );
+        }
     }
 
     /**
@@ -1908,6 +2091,7 @@ class VirtualMachine extends EventEmitter {
      * of the current editing target's blocks.
      */
     emitWorkspaceUpdate () {
+        if (!this.editingTarget) return;
         // Create a list of broadcast message Ids according to the stage variables
         const stageVariables = this.runtime.getTargetForStage().variables;
         let messageIds = [];
@@ -1980,17 +2164,22 @@ class VirtualMachine extends EventEmitter {
      * Reorder target by index. Return whether a change was made.
      * @param {!string} targetIndex Index of the target.
      * @param {!number} newIndex index that the target should be moved to.
+     * @param {!boolean} isRemoteOperation - set to true if this is a remote operation
      * @returns {boolean} Whether a target was reordered.
      */
     reorderTarget (targetIndex, newIndex) {
-        let targets = this.runtime.targets;
-        targetIndex = MathUtil.clamp(targetIndex, 0, targets.length - 1);
-        newIndex = MathUtil.clamp(newIndex, 0, targets.length - 1);
-        if (targetIndex === newIndex) return false;
-        const target = targets[targetIndex];
-        targets = targets.slice(0, targetIndex).concat(targets.slice(targetIndex + 1));
-        targets.splice(newIndex, 0, target);
-        this.runtime.targets = targets;
+        const targets = [...this.runtime.targets];
+        const originalTargets = targets.filter(t => t.isOriginal);
+        const processedData = MathUtil.moveArrayElement(originalTargets, targetIndex, newIndex);
+        if (processedData.array === originalTargets) return false;
+
+        const target = originalTargets[processedData.fromIndex];
+        const newIndexTarget = originalTargets[processedData.toIndex];
+        const fromIndex = targets.findIndex(t => t.id === target.id);
+        const toIndex = targets.findIndex(t => t.id === newIndexTarget.id);
+        this.runtime.targets = MathUtil.moveArrayElement(targets, fromIndex, toIndex).array;
+
+        this.runtime.emitTargetsIndexChanged([{id: target.id, currentIndex: processedData.toIndex}]);
         this.emitTargetsUpdate();
         return true;
     }
@@ -2005,18 +2194,33 @@ class VirtualMachine extends EventEmitter {
     reorderCostume (targetId, costumeIndex, newIndex) {
         const target = this.runtime.getTargetById(targetId);
         if (target) {
-            const reorderSuccessful = target.reorderCostume(costumeIndex, newIndex);
+            const costumes = target.getCostumes();
+            const movingCostume = costumes[costumeIndex];
+            const oldCurrentCostumeObject = target.getCurrentCostume();
+
+            const reorderSuccessful = target.reorderCostume(
+                costumeIndex,
+                newIndex
+            );
+
             if (reorderSuccessful) {
-                const triggerData = {
-                    triggerId: 'costumeReordered',
-                    data: {
-                        targetId: target.getName(),
-                        costumeIndex: costumeIndex,
-                        newIndex: newIndex
-                    }
-                };
-                // Dispatch the custom event for the addon to pick up
-                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+                const newSelectedContextIndex = target.getCostumeIndexByName(oldCurrentCostumeObject.name);
+                target.currentCostume = newSelectedContextIndex;
+
+                this.runtime.emitTargetSimplePropertyChanged([
+                    [target.id, {currentCostume: target.currentCostume}]
+                ]);
+
+                if (movingCostume) {
+                    this.runtime.emitTargetCostumeChanged(target.id, [
+                        'reorder',
+                        {
+                            id: movingCostume.id,
+                            currentIndex: newIndex
+                        }
+                    ]);
+                }
+
                 this.runtime.emitProjectChanged();
             }
             return reorderSuccessful;
@@ -2034,18 +2238,14 @@ class VirtualMachine extends EventEmitter {
     reorderSound (targetId, soundIndex, newIndex) {
         const target = this.runtime.getTargetById(targetId);
         if (target) {
+            const sounds = target.getSounds();
+            const movingSound = sounds[soundIndex];
+
             const reorderSuccessful = target.reorderSound(soundIndex, newIndex);
-            if (reorderSuccessful) {
-                const triggerData = {
-                    triggerId: 'soundReordered',
-                    data: {
-                        targetId: target.getName(),
-                        soundIndex: soundIndex,
-                        newIndex: newIndex
-                    }
-                };
-                // Dispatch the custom event for the addon to pick up
-                window.dispatchEvent(new CustomEvent('collaboration_addon_trigger', {detail: triggerData}));
+            if (reorderSuccessful && movingSound) {
+                this.runtime.emitTargetSoundsChanged(target.originalTargetId, ['reorder',
+                    [{id: movingSound.id, currentIndex: newIndex}]
+                ]);
                 this.runtime.emitProjectChanged();
             }
             return reorderSuccessful;

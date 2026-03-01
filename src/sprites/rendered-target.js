@@ -446,6 +446,8 @@ class RenderedTarget extends Target {
         this.currentCostume = MathUtil.wrapClamp(
             index, 0, this.sprite.costumes.length - 1
         );
+        this.runtime.emitTargetCurrentCostumeChanged(this.currentCostume);
+        
         if (this.renderer) {
             const costume = this.sprite.costumes[this.currentCostume];
             this.renderer.updateDrawableSkinId(this.drawableID, costume.skinId);
@@ -462,12 +464,38 @@ class RenderedTarget extends Target {
      * Add a costume, taking care to avoid duplicate names.
      * @param {!object} costumeObject Object representing the costume.
      * @param {?int} index Index at which to add costume
+     * @param {?boolean} isRemoteOperation Whether this is a remote operation
      */
-    addCostume (costumeObject, index) {
-        if (typeof index === 'number' && !isNaN(index)) {
-            this.sprite.addCostumeAt(costumeObject, index);
-        } else {
-            this.sprite.addCostumeAt(costumeObject, this.sprite.costumes.length);
+    addCostume (costumeObject, index, isRemoteOperation) {
+        if (!(typeof index === 'number' && !isNaN(index))) {
+            index = this.sprite.costumes.length;
+        }
+        this.sprite.addCostumeAt(costumeObject, index);
+
+
+        if (!isRemoteOperation) {
+            const {
+                id,
+                assetId,
+                bitmapResolution,
+                dataFormat,
+                md5,
+                name,
+                rotationCenterX,
+                rotationCenterY
+            } = costumeObject;
+            this.runtime.emitTargetCostumeChanged(this.originalTargetId, ['add', id,
+                {
+                    id,
+                    assetId,
+                    bitmapResolution,
+                    dataFormat,
+                    md5ext: md5 ? md5 : `${assetId}.${dataFormat}`,
+                    name,
+                    rotationCenterX,
+                    rotationCenterY
+                }
+            ]);
         }
     }
 
@@ -475,14 +503,22 @@ class RenderedTarget extends Target {
      * Rename a costume, taking care to avoid duplicate names.
      * @param {int} costumeIndex - the index of the costume to be renamed.
      * @param {string} newName - the desired new name of the costume (will be modified if already in use).
+     * @param {boolean} [sendNameChangedEvent = true] whether to send an event when the name changes.
      */
-    renameCostume (costumeIndex, newName) {
+    renameCostume (costumeIndex, newName, sendNameChangedEvent = true) {
         const usedNames = this.sprite.costumes
             .filter((costume, index) => costumeIndex !== index)
             .map(costume => costume.name);
         const oldName = this.getCostumes()[costumeIndex].name;
         const newUnusedName = StringUtil.unusedName(newName, usedNames);
-        this.getCostumes()[costumeIndex].name = newUnusedName;
+        if (oldName === newUnusedName) {
+            return;
+        }
+        const costume = this.getCostumes()[costumeIndex];
+        costume.name = newUnusedName;
+        if (sendNameChangedEvent) {
+            this.runtime.emitTargetCostumeChanged(this.originalTargetId, ['update', costume.id, {name: newUnusedName}]);
+        }
 
         if (this.isStage) {
             // Since this is a backdrop, go through all targets and
@@ -490,22 +526,22 @@ class RenderedTarget extends Target {
             const targets = this.runtime.targets;
             for (let i = 0; i < targets.length; i++) {
                 const currTarget = targets[i];
-                currTarget.blocks.updateAssetName(oldName, newUnusedName, 'backdrop');
+                currTarget.blocks.updateAssetName(oldName, newUnusedName, 'backdrop', currTarget.originalTargetId);
             }
         } else {
-            this.blocks.updateAssetName(oldName, newUnusedName, 'costume');
+            this.blocks.updateAssetName(oldName, newUnusedName, 'costume', this.originalTargetId);
         }
-
     }
 
     /**
      * Delete a costume by index.
      * @param {number} index Costume index to be deleted
+     * @param {?boolean} isRemoteOperation Whether this is a remote operation
      * @return {?object} The costume that was deleted or null
      * if the index was out of bounds of the costumes list or
      * this target only has one costume.
      */
-    deleteCostume (index) {
+    deleteCostume (index, isRemoteOperation) {
         const originalCostumeCount = this.sprite.costumes.length;
         if (originalCostumeCount === 1) return null;
 
@@ -521,6 +557,13 @@ class RenderedTarget extends Target {
             this.setCostume(this.currentCostume - 1);
         } else {
             this.setCostume(this.currentCostume);
+        }
+
+        if (!isRemoteOperation) {
+            this.runtime.emitTargetSimplePropertyChanged([[this.originalTargetId,
+                {currentCostume: this.currentCostume}
+            ]]);
+            this.runtime.emitTargetCostumeChanged(this.originalTargetId, ['delete', deletedCostume.id]);
         }
 
         this.runtime.requestTargetsUpdate(this);
@@ -547,14 +590,22 @@ class RenderedTarget extends Target {
      * @param {int} soundIndex - the index of the sound to be renamed.
      * @param {string} newName - the desired new name of the sound (will be modified if already in use).
      */
-    renameSound (soundIndex, newName) {
+    renameSound (soundIndex, newName, sendNameChangedEvent = true) {
         const usedNames = this.sprite.sounds
             .filter((sound, index) => soundIndex !== index)
             .map(sound => sound.name);
         const oldName = this.sprite.sounds[soundIndex].name;
         const newUnusedName = StringUtil.unusedName(newName, usedNames);
+        if (oldName === newUnusedName) {
+            return;
+        }
         this.sprite.sounds[soundIndex].name = newUnusedName;
-        this.blocks.updateAssetName(oldName, newUnusedName, 'sound');
+        this.blocks.updateAssetName(oldName, newUnusedName, 'sound', this.originalTargetId);
+        if (sendNameChangedEvent) {
+            this.runtime.emitTargetSoundsChanged(
+                this.originalTargetId, ['update', this.sprite.sounds[soundIndex].id, {name: newUnusedName}]
+            );
+        }
     }
 
     /**
@@ -974,6 +1025,7 @@ class RenderedTarget extends Target {
         newClone.draggable = this.draggable;
         newClone.visible = this.visible;
         newClone.size = this.size;
+        newClone.originalTargetId = this.originalTargetId;
         newClone.currentCostume = this.currentCostume;
         newClone.rotationStyle = this.rotationStyle;
         newClone.effects = Clone.simple(this.effects);
