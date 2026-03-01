@@ -748,10 +748,7 @@ const serializeMonitors = function (monitors, runtime, extensions) {
                 serializedMonitor.isDiscrete = monitorData.isDiscrete;
             }
             return serializedMonitor;
-        })
-        // By default the sequence is lazily evaluated, but we want it to be evaluated right
-        // now to update the used extension list.
-        .toArray();
+        });
 };
 
 /**
@@ -1507,7 +1504,7 @@ const deserializeMonitor = function (monitorData, runtime, targets, extensions) 
         }
     }
     // Do not trigger emitMonitorsChanged by serializing the new monitor
-    runtime.requestAddMonitor(MonitorRecord(monitorData), true);
+    runtime.requestAddMonitor(new MonitorRecord(monitorData), true);
 };
 
 // Replace variable IDs throughout the project with

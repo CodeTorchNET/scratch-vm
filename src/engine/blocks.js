@@ -3,7 +3,6 @@ const mutationAdapter = require('./mutation-adapter');
 const xmlEscape = require('../util/xml-escape');
 const MonitorRecord = require('./monitor-record');
 const Clone = require('../util/clone');
-const {Map} = require('immutable');
 const BlocksExecuteCache = require('./blocks-execute-cache');
 const BlocksRuntimeCache = require('./blocks-runtime-cache');
 const log = require('../util/log');
@@ -797,10 +796,10 @@ class Blocks {
 
                 const flyoutBlock = block.shadow && block.parent ? this._blocks[block.parent] : block;
                 if (flyoutBlock.isMonitored) {
-                    this.runtime.requestUpdateMonitor(Map({
+                    this.runtime.requestUpdateMonitor({
                         id: flyoutBlock.id,
                         params: this._getBlockParams(flyoutBlock)
-                    }));
+                    });
                 }
             }
 
@@ -863,7 +862,7 @@ class Blocks {
             } else if (!wasMonitored && block.isMonitored) {
                 // Tries to show the monitor for specified block. If it doesn't exist, add the monitor.
                 if (!this.runtime.requestShowMonitor(block.id, isRuntimeOp)) {
-                    this.runtime.requestAddMonitor(MonitorRecord({
+                    this.runtime.requestAddMonitor(new MonitorRecord({
                         id: block.id,
                         targetId: block.targetId,
                         spriteName: block.targetId ? this.runtime.getTargetById(block.targetId).getName() : null,

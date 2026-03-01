@@ -1,5 +1,4 @@
 const EventEmitter = require('events');
-const {OrderedMap} = require('immutable');
 const ExtendedJSON = require('@turbowarp/json');
 const uuid = require('uuid');
 
@@ -23,6 +22,8 @@ const ScratchLinkWebSocket = require('../util/scratch-link-websocket');
 const FontManager = require('./tw-font-manager');
 const fetchWithTimeout = require('../util/fetch-with-timeout');
 const platform = require('./tw-platform.js');
+const safeStringify = require('../util/tw-safe-stringify.js');
+const MonitorState = require('./tw-monitor-state.js');
 
 // Virtual I/O devices.
 const Clock = require('../io/clock');
@@ -50,6 +51,7 @@ const defaultBlockPackages = {
 
 const interpolate = require('./tw-interpolate');
 const FrameLoop = require('./tw-frame-loop');
+const MonitorRecord = require('./monitor-record.js');
 
 const defaultExtensionColors = ['#0FBD8C', '#0DA57A', '#0B8E69'];
 
@@ -320,14 +322,9 @@ class Runtime extends EventEmitter {
         this.monitorBlockInfo = {};
 
         /**
-         * Ordered map of all monitors, which are MonitorReporter objects.
+         * Ordered map of all monitors, which are MonitorRecord objects.
          */
-        this._monitorState = OrderedMap({});
-
-        /**
-         * Monitor state from last tick
-         */
-        this._prevMonitorState = OrderedMap({});
+        this._monitorState = new MonitorState();
 
         /**
          * Whether the project is in "turbo mode."
@@ -514,6 +511,12 @@ class Runtime extends EventEmitter {
          * Do not update this directly. Use Runtime.setEnforcePrivacy() instead.
          */
         this.enforcePrivacy = true;
+
+        /**
+         * If true, an external communication method exists and enforcePrivacy is enabled.
+         * Do not update this directly. Must be changed via public functions that call Runtime.updatePrivacy().
+         */
+        this.privacyRestrictionsActive = false;
 
         /**
          * Internal map of opaque identifiers to the callback to run that function.
@@ -2397,10 +2400,9 @@ class Runtime extends EventEmitter {
         this.targets.map(this.disposeTarget, this);
         this.extensionStorage = {};
         // tw: explicitly emit a MONITORS_UPDATE instead of relying on implicit behavior of _step()
-        const emptyMonitorState = OrderedMap({});
-        if (!emptyMonitorState.equals(this._monitorState)) {
-            this._monitorState = emptyMonitorState;
-            this.emit(Runtime.MONITORS_UPDATE, this._monitorState);
+        if (!this._monitorState.empty()) {
+            this._monitorState = new MonitorState();
+            this.emit(Runtime.MONITORS_UPDATE, this._monitorState.shallowClone());
         }
         this.emit(Runtime.RUNTIME_DISPOSED);
         this.ioDevices.clock.resetProjectTimer();
@@ -2690,9 +2692,9 @@ class Runtime extends EventEmitter {
             this._refreshTargets = false;
         }
 
-        if (!this._prevMonitorState.equals(this._monitorState)) {
-            this.emit(Runtime.MONITORS_UPDATE, this._monitorState);
-            this._prevMonitorState = this._monitorState;
+        if (this._monitorState.dirty) {
+            this.emit(Runtime.MONITORS_UPDATE, this._monitorState.shallowClone());
+            this._monitorState.dirty = false;
         }
 
         if (this.profiler !== null) {
@@ -2827,12 +2829,13 @@ class Runtime extends EventEmitter {
                 const offsetX = deltaX / 2;
                 const offsetY = deltaY / 2;
                 for (const monitor of this._monitorState.valueSeq()) {
-                    const newMonitor = monitor
-                        .set('x', monitor.get('x') + offsetX)
-                        .set('y', monitor.get('y') + offsetY);
-                    this.requestUpdateMonitor(newMonitor);
+                    this.requestUpdateMonitor({
+                        id: monitor.id,
+                        x: monitor.get('x') + offsetX,
+                        y: monitor.get('y') + offsetY
+                    });
                 }
-                this.emit(Runtime.MONITORS_UPDATE, this._monitorState);
+                this.emit(Runtime.MONITORS_UPDATE, this._monitorState.shallowClone());
             }
 
             this.stageWidth = width;
@@ -3208,21 +3211,24 @@ class Runtime extends EventEmitter {
      */
     visualReport (target, blockId, value) {
         if (target === this.getEditingTarget()) {
-            this.emit(Runtime.VISUAL_REPORT, {id: blockId, value: String(value)});
+            this.emit(Runtime.VISUAL_REPORT, {
+                id: blockId,
+                value: safeStringify(value)
+            });
         }
     }
 
     /**
      * Add a monitor to the state. If the monitor already exists in the state,
      * updates those properties that are defined in the given monitor record.
-     * @param {!MonitorRecord} monitor Monitor to add.
+     * @param {import('./monitor-record.js')} monitor Monitor to add.
      * @param {boolean} isRemoteOperation - set to true if this is a remote operation
      */
     requestAddMonitor (monitor, isRemoteOperation) {
         const id = monitor.get('id');
         if (!this.requestUpdateMonitor(monitor)) { // update monitor if it exists in the state
             // if the monitor did not exist in the state, add it
-            this._monitorState = this._monitorState.set(id, monitor);
+            this._monitorState.set(monitor.id, monitor);
             if (!isRemoteOperation) {
                 this.emitMonitorsChanged(['add', id]);
             }
@@ -3231,22 +3237,16 @@ class Runtime extends EventEmitter {
 
     /**
      * Update a monitor in the state and report success/failure of update.
-     * @param {!Map} monitor Monitor values to update. Values on the monitor with overwrite
-     *     values on the old monitor with the same ID. If a value isn't defined on the new monitor,
+     * @param {import('./monitor-record.js').ExternalDelta} delta Monitor values to update. Values on the monitor will
+     *     overwrite values on the old monitor with the same ID. If a value isn't defined on the new monitor,
      *     the old monitor will keep its old value.
      * @return {boolean} true if monitor exists in the state and was updated, false if it did not exist.
      */
-    requestUpdateMonitor (monitor) {
-        const id = monitor.get('id');
+    requestUpdateMonitor (delta) {
+        delta = MonitorRecord.externalDeltaToJS(delta);
+        const id = delta.id;
         if (this._monitorState.has(id)) {
-            this._monitorState =
-                // Use mergeWith here to prevent undefined values from overwriting existing ones
-                this._monitorState.set(id, this._monitorState.get(id).mergeWith((prev, next) => {
-                    if (typeof next === 'undefined' || next === null) {
-                        return prev;
-                    }
-                    return next;
-                }, monitor));
+            this._monitorState.set(id, delta);
             return true;
         }
         return false;
@@ -3260,7 +3260,7 @@ class Runtime extends EventEmitter {
     requestRemoveMonitor (monitorId, isRemoteOperation) {
         const deletedMonitor = this._monitorState.get(monitorId);
         if (deletedMonitor) {
-            this._monitorState = this._monitorState.delete(monitorId);
+            this._monitorState.delete(monitorId);
             if (!isRemoteOperation) {
                 this.emitMonitorsChanged(['delete', monitorId, {spriteName: deletedMonitor.get('spriteName')}]);
             }
@@ -3274,10 +3274,10 @@ class Runtime extends EventEmitter {
      */
     requestHideMonitor (monitorId) {
         this.emitMonitorsChanged(['update', monitorId, {visible: false}]);
-        return this.requestUpdateMonitor(new Map([
-            ['id', monitorId],
-            ['visible', false]
-        ]));
+        return this.requestUpdateMonitor({
+            id: monitorId,
+            visible: false
+        });
     }
 
     /**
@@ -3288,10 +3288,10 @@ class Runtime extends EventEmitter {
      */
     requestShowMonitor (monitorId) {
         this.emitMonitorsChanged(['update', monitorId, {visible: true}]);
-        return this.requestUpdateMonitor(new Map([
-            ['id', monitorId],
-            ['visible', true]
-        ]));
+        return this.requestUpdateMonitor({
+            id: monitorId,
+            visible: true
+        });
     }
 
     /**
@@ -3305,7 +3305,7 @@ class Runtime extends EventEmitter {
                 this.emitMonitorsChanged(['delete', monitor.get('id'), {spriteName: monitor.get('spriteName')}]);
             }
         });
-        this._monitorState = this._monitorState.filterNot(value => value.targetId === targetId);
+        this._monitorState.filter(value => value.targetId !== targetId);
     }
 
     /**
@@ -3638,12 +3638,12 @@ class Runtime extends EventEmitter {
     }
 
     updatePrivacy () {
-        const enforceRestrictions = (
+        this.privacyRestrictionsActive = (
             this.enforcePrivacy &&
             Object.values(this.externalCommunicationMethods).some(i => i)
         );
         if (this.renderer && this.renderer.setPrivateSkinAccess) {
-            this.renderer.setPrivateSkinAccess(!enforceRestrictions);
+            this.renderer.setPrivateSkinAccess(!this.privacyRestrictionsActive);
         }
     }
 
