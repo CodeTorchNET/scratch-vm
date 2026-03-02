@@ -3300,7 +3300,7 @@ class Runtime extends EventEmitter {
      * @param {!string} targetId Remove all monitors with given target ID.
      */
     requestRemoveMonitorByTargetId (targetId) {
-        this._monitorState.forEach(monitor => {
+        this._monitorState.values().forEach(monitor => {
             if (monitor.get('targetId') === targetId) {
                 this.emitMonitorsChanged(['delete', monitor.get('id'), {spriteName: monitor.get('spriteName')}]);
             }
