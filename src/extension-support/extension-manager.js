@@ -101,6 +101,12 @@ class ExtensionManager {
         this.workerURLs = [];
 
         /**
+         * Map of worker ID to the emit flag for when it finishes loading.
+         * @type {Array<boolean>}
+         */
+        this.workerEmitFlags = [];
+
+        /**
          * Map of loaded extension URLs/IDs (equivalent for built-in extensions) to service name.
          * @type {Map.<string,string>}
          * @private
@@ -211,7 +217,12 @@ class ExtensionManager {
     async loadExtensionURL (extensionURL, emit = true, additionalInfo = {}) {
         if (this.isBuiltinExtension(extensionURL)) {
             if (emit){
-                this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, extensionURL);
+                console.log('emitting (1)', extensionURL);
+                this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED,
+                    {
+                        URL: extensionURL,
+                        name: extensionURL
+                    });
             }
             this.loadExtensionIdSync(extensionURL, additionalInfo);
             return;
@@ -226,9 +237,6 @@ class ExtensionManager {
             throw new Error(`Invalid extension URL: ${extensionURL}`);
         }
 
-        if (emit) {
-            this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, extensionURL);
-        }
         this.runtime.setExternalCommunicationMethod('customExtensions', true);
 
         this.loadingAsyncExtensions++;
@@ -242,6 +250,7 @@ class ExtensionManager {
                 .catch(error => this._failedLoadingExtensionScript(error));
             const fakeWorkerId = this.nextExtensionWorker++;
             this.workerURLs[fakeWorkerId] = extensionURL;
+            this.workerEmitFlags[fakeWorkerId] = emit;
 
             for (const extensionObject of extensionObjects) {
                 const extensionInfo = extensionObject.getInfo();
@@ -249,6 +258,14 @@ class ExtensionManager {
                 dispatch.setServiceSync(serviceName, extensionObject);
                 dispatch.callSync('extensions', 'registerExtensionServiceSync', serviceName);
                 this._loadedExtensions.set(extensionInfo.id, serviceName);
+
+                if (emit) {
+                    console.log('emitting (2)', extensionURL, extensionInfo.id);
+                    this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, {
+                        URL: extensionURL,
+                        name: extensionInfo.id
+                    });
+                }
             }
 
             this._finishedLoadingExtensionScript();
@@ -267,7 +284,13 @@ class ExtensionManager {
         /* eslint-enable max-len */
 
         return new Promise((resolve, reject) => {
-            this.pendingExtensions.push({extensionURL: rewritten, resolve, reject});
+            this.pendingExtensions.push({
+                extensionURL: extensionURL,
+                rewritten: rewritten,
+                emit: emit,
+                resolve,
+                reject
+            });
             dispatch.addWorker(new ExtensionWorker());
         }).catch(error => this._failedLoadingExtensionScript(error));
     }
@@ -317,7 +340,8 @@ class ExtensionManager {
         const workerInfo = this.pendingExtensions.shift();
         this.pendingWorkers[id] = workerInfo;
         this.workerURLs[id] = workerInfo.extensionURL;
-        return [id, workerInfo.extensionURL];
+        this.workerEmitFlags[id] = workerInfo.emit;
+        return [id, workerInfo.rewritten];
     }
 
     /**
@@ -338,6 +362,17 @@ class ExtensionManager {
             this._loadedExtensions.set(info.id, serviceName);
             this._registerExtensionInfo(serviceName, info);
             this._finishedLoadingExtensionScript();
+
+            const workerId = +serviceName.split('.')[1];
+            const extensionURL = this.workerURLs[workerId];
+            const emit = this.workerEmitFlags[workerId];
+            if (emit) {
+                console.log('emitting (3)', extensionURL, info.id);
+                this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, {
+                    URL: extensionURL,
+                    name: info.id
+                });
+            }
         });
     }
 
