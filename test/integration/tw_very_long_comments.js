@@ -10,7 +10,7 @@ const path = require('path');
 test('serializes very long comments', t => {
     const rt = new Runtime();
     const sprite = new Sprite();
-    const target = new RenderedTarget(sprite);
+    const target = new RenderedTarget(sprite, rt);
     rt.addTarget(target);
 
     target.createComment('id_short', null, 'short comment', 0, 0, 20, 20, false);
