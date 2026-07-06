@@ -1084,23 +1084,34 @@ class RenderedTarget extends Target {
         const force = Object.prototype.hasOwnProperty.call(data, 'force') ? data.force : null;
         const isXChanged = Object.prototype.hasOwnProperty.call(data, 'x');
         const isYChanged = Object.prototype.hasOwnProperty.call(data, 'y');
+        const changedProps = {};
         if (isXChanged || isYChanged) {
             this.setXY(isXChanged ? data.x : this.x, isYChanged ? data.y : this.y, force);
+            if (isXChanged) changedProps.x = this.x;
+            if (isYChanged) changedProps.y = this.y;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'direction')) {
             this.setDirection(data.direction);
+            changedProps.direction = this.direction;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'draggable')) {
             this.setDraggable(data.draggable);
+            changedProps.draggable = this.draggable;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'rotationStyle')) {
             this.setRotationStyle(data.rotationStyle);
+            changedProps.rotationStyle = this.rotationStyle;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'visible')) {
             this.setVisible(data.visible);
+            changedProps.visible = this.visible;
         }
         if (Object.prototype.hasOwnProperty.call(data, 'size')) {
             this.setSize(data.size);
+            changedProps.size = this.size;
+        }
+        if (Object.keys(changedProps).length > 0) {
+            this.runtime.emitTargetSimplePropertyChanged([[this.id, changedProps]]);
         }
     }
 
