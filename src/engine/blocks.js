@@ -1081,6 +1081,88 @@ class Blocks {
     }
 
     /**
+     * Verify every parent / next / inputs.*.block|shadow reference points to a
+     * block that exists in this container, and that no parent chain is cyclic.
+     * Dangling references are nulled and cycle-closing links detached, each with
+     * a console warning, so a corrupt graph degrades to a loadable one instead
+     * of throwing during XML rebuild. Used as a collaboration-sync safety net.
+     * @return {number} number of repairs performed (0 = graph was consistent)
+     */
+    validateAndRepair () {
+        let repairs = 0;
+        const blocks = this._blocks;
+
+        for (const blockId in blocks) {
+            const block = blocks[blockId];
+            if (block.parent !== null && typeof block.parent !== 'undefined' && !blocks[block.parent]) {
+                log.warn(`Block graph repair: ${blockId} has dangling parent ${block.parent}; detaching.`);
+                block.parent = null;
+                block.topLevel = true;
+                this._addScript(blockId);
+                repairs++;
+            }
+            if (block.next !== null && typeof block.next !== 'undefined' && !blocks[block.next]) {
+                log.warn(`Block graph repair: ${blockId} has dangling next ${block.next}; clearing.`);
+                block.next = null;
+                repairs++;
+            }
+            for (const inputName in block.inputs) {
+                const input = block.inputs[inputName];
+                if (input.block !== null && typeof input.block !== 'undefined' && !blocks[input.block]) {
+                    log.warn(
+                        `Block graph repair: ${blockId} input ${inputName} ` +
+                        `references missing block ${input.block}; clearing.`);
+                    input.block = null;
+                    repairs++;
+                }
+                if (input.shadow !== null && typeof input.shadow !== 'undefined' &&
+                    input.shadow !== input.block && !blocks[input.shadow]) {
+                    log.warn(
+                        `Block graph repair: ${blockId} input ${inputName} ` +
+                        `references missing shadow ${input.shadow}; clearing.`);
+                    input.shadow = null;
+                    repairs++;
+                }
+            }
+        }
+
+        for (const blockId in blocks) {
+            const seen = new Set();
+            let current = blockId;
+            while (current !== null && typeof current !== 'undefined' && blocks[current]) {
+                if (seen.has(current)) {
+                    // Parent chain loops back on itself: detach the block whose
+                    // parent link closes the cycle so the chain terminates.
+                    const offender = blocks[current];
+                    const parent = blocks[offender.parent];
+                    if (parent) {
+                        if (parent.next === current) parent.next = null;
+                        for (const inputName in parent.inputs) {
+                            if (parent.inputs[inputName].block === current) parent.inputs[inputName].block = null;
+                            if (parent.inputs[inputName].shadow === current) parent.inputs[inputName].shadow = null;
+                        }
+                    }
+                    log.warn(
+                        `Block graph repair: cyclic parent chain at ${current}; ` +
+                        `detaching from ${offender.parent}.`);
+                    offender.parent = null;
+                    offender.topLevel = true;
+                    this._addScript(current);
+                    repairs++;
+                    break;
+                }
+                seen.add(current);
+                current = blocks[current].parent;
+            }
+        }
+
+        if (repairs > 0) {
+            this.resetCache();
+        }
+        return repairs;
+    }
+
+    /**
      * Returns a map of all references to variables or lists from blocks
      * in this block container.
      * @param {Array<object>} optBlocks Optional list of blocks to constrain the search to.

@@ -3309,6 +3309,31 @@ class Runtime extends EventEmitter {
     }
 
     /**
+     * Reassign a target's id, updating all runtime bookkeeping that keys
+     * state by target id (variable ownership, monitor records, monitor
+     * flyout block bindings). Used by collaboration initial sync.
+     * @param {!Target} target The target to re-identify.
+     * @param {string} newId The new id.
+     */
+    updateTargetId (target, newId) {
+        const oldId = target.id;
+        if (oldId === newId) return;
+        target.id = newId;
+        target.originalTargetId = newId;
+        for (const variable of Object.values(target.variables)) {
+            variable.targetId = newId;
+        }
+        for (const monitor of this._monitorState.values()) {
+            if (monitor.get('targetId') === oldId) {
+                this.requestUpdateMonitor({id: monitor.get('id'), targetId: newId});
+            }
+        }
+        for (const block of Object.values(this.monitorBlocks._blocks)) {
+            if (block.targetId === oldId) block.targetId = newId;
+        }
+    }
+
+    /**
      * Get a target by its id.
      * @param {string} targetId Id of target to find.
      * @return {?Target} The target, if found.
