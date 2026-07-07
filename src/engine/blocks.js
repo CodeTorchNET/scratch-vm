@@ -523,7 +523,7 @@ class Blocks {
                 editingTarget.renameVariable(e.varId, e.newName);
                 // Update all the blocks on the current target that use
                 // this variable
-                editingTarget.blocks.updateBlocksAfterVarRename(e.varId, e.newName);
+                editingTarget.blocks.updateBlocksAfterVarRename(e.varId, e.newName, originalTargetId);
                 this.emitProjectChanged();
                 this.runtime.emitTargetVariablesChanged(originalTargetId,
                     [e.varId, variable.type, 'update', {name: e.newName}]
@@ -540,7 +540,8 @@ class Blocks {
                 const tempMap = {};
                 for (let i = 0; i < targets.length; i++) {
                     const currTarget = targets[i];
-                    const affectedBlocks = currTarget.blocks.updateBlocksAfterVarRename(e.varId, e.newName);
+                    const affectedBlocks = currTarget.blocks.updateBlocksAfterVarRename(
+                        e.varId, e.newName, currTarget.originalTargetId);
                     if (affectedBlocks.length) {
                         tempMap[currTarget.id] = affectedBlocks;
                     }
@@ -578,6 +579,8 @@ class Blocks {
                     // one from the event.
                     currTarget.comments[e.commentId].x = e.xy.x;
                     currTarget.comments[e.commentId].y = e.xy.y;
+                    this.runtime.emitTargetCommentsChanged(currTarget.originalTargetId,
+                        ['update', e.commentId, {x: e.xy.x, y: e.xy.y}]);
                 }
             }
             this.emitProjectChanged();
@@ -986,7 +989,13 @@ class Blocks {
                     block: e.id,
                     shadow: oldShadow
                 };
-                changedBlockRecorder.set(e.newParent, {[JSON.stringify(['inputs', e.newInput, 'block'])]: e.id});
+                changedBlockRecorder.set(e.newParent, {
+                    [JSON.stringify(['inputs', e.newInput, 'name'])]: e.newInput,
+                    [JSON.stringify(['inputs', e.newInput, 'block'])]: e.id,
+                    [JSON.stringify(['inputs', e.newInput, 'shadow'])]:
+                        typeof oldShadow === 'undefined' ?
+                            null : oldShadow
+                });
             }
             this._blocks[e.id].parent = e.newParent;
             didChange = true;
@@ -1211,16 +1220,20 @@ class Blocks {
      * Keep blocks up to date after a variable gets renamed.
      * @param {string} varId The id of the variable that was renamed
      * @param {string} newName The new name of the variable that was renamed
+     * @param {?string} targetId The ID of the target to emit block changes for (optional).
      */
-    updateBlocksAfterVarRename (varId, newName) {
+    updateBlocksAfterVarRename (varId, newName, targetId) {
         const blocks = this._blocks;
         const changedBlocks = [];
         for (const blockId in blocks) {
             let varOrListField = null;
+            let fieldName = null;
             if (blocks[blockId].fields.VARIABLE) {
                 varOrListField = blocks[blockId].fields.VARIABLE;
+                fieldName = 'VARIABLE';
             } else if (blocks[blockId].fields.LIST) {
                 varOrListField = blocks[blockId].fields.LIST;
+                fieldName = 'LIST';
             }
             if (varOrListField) {
                 const currFieldId = varOrListField.id;
@@ -1228,7 +1241,18 @@ class Blocks {
                     if (blocks[blockId].parent) {
                         changedBlocks.push([blockId, blocks[blockId].parent]);
                     }
+                    const valueChanged = varOrListField.value !== newName;
                     varOrListField.value = newName;
+                    if (targetId && valueChanged) {
+                        this.runtime.emitTargetBlocksChanged(targetId, [
+                            'update',
+                            {
+                                [blockId]: {
+                                    [JSON.stringify(['fields', fieldName, 'value'])]: newName
+                                }
+                            }
+                        ]);
+                    }
                 }
             }
         }
@@ -1299,9 +1323,10 @@ class Blocks {
      * @param {string} oldName The old name of the variable that was renamed.
      * @param {string} newName The new name of the variable that was renamed.
      * @param {string} targetName The name of the target the variable belongs to.
+     * @param {?string} targetId The ID of the target to emit block changes for (optional).
      * @return {boolean} Returns true if any of the blocks were updated.
      */
-    updateSensingOfReference (oldName, newName, targetName) {
+    updateSensingOfReference (oldName, newName, targetName, targetId) {
         const blocks = this._blocks;
         let blockUpdated = false;
         for (const blockId in blocks) {
@@ -1314,6 +1339,16 @@ class Blocks {
                 if (inputBlock.fields.OBJECT.value === targetName) {
                     block.fields.PROPERTY.value = newName;
                     blockUpdated = true;
+                    if (targetId) {
+                        this.runtime.emitTargetBlocksChanged(targetId, [
+                            'update',
+                            {
+                                [blockId]: {
+                                    [JSON.stringify(['fields', 'PROPERTY', 'value'])]: newName
+                                }
+                            }
+                        ]);
+                    }
                 }
             }
         }

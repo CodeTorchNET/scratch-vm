@@ -166,8 +166,9 @@ class ExtensionManager {
      * fail if the provided id is not does not match an internal extension.
      * @param {string} extensionId - the ID of an internal extension
      * @param {object} additionalInfo data to be passed on to very special extensions (EG: customAchievements)
+     * @param {boolean} emit - whether to emit COLLABORATION_EXTENSION_ADDED once loaded
      */
-    loadExtensionIdSync (extensionId, additionalInfo = {}) {
+    loadExtensionIdSync (extensionId, additionalInfo = {}, emit = true) {
         if (!this.isBuiltinExtension(extensionId)) {
             log.warn(`Could not find extension ${extensionId} in the built in extensions.`);
             return;
@@ -190,6 +191,13 @@ class ExtensionManager {
         const serviceName = this._registerInternalExtension(extensionInstance);
         this._loadedExtensions.set(extensionId, serviceName);
         this.runtime.compilerRegisterExtension(extensionId, extensionInstance);
+
+        if (emit) {
+            this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, {
+                URL: extensionId,
+                name: extensionId
+            });
+        }
     }
 
     addBuiltinExtension (extensionId, extensionClass) {
@@ -216,15 +224,7 @@ class ExtensionManager {
      */
     async loadExtensionURL (extensionURL, emit = true, additionalInfo = {}) {
         if (this.isBuiltinExtension(extensionURL)) {
-            if (emit){
-                console.log('emitting (1)', extensionURL);
-                this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED,
-                    {
-                        URL: extensionURL,
-                        name: extensionURL
-                    });
-            }
-            this.loadExtensionIdSync(extensionURL, additionalInfo);
+            this.loadExtensionIdSync(extensionURL, additionalInfo, emit);
             return;
         }
 
@@ -260,7 +260,6 @@ class ExtensionManager {
                 this._loadedExtensions.set(extensionInfo.id, serviceName);
 
                 if (emit) {
-                    console.log('emitting (2)', extensionURL, extensionInfo.id);
                     this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, {
                         URL: extensionURL,
                         name: extensionInfo.id
@@ -367,7 +366,6 @@ class ExtensionManager {
             const extensionURL = this.workerURLs[workerId];
             const emit = this.workerEmitFlags[workerId];
             if (emit) {
-                console.log('emitting (3)', extensionURL, info.id);
                 this.runtime.emit(this.runtime.constructor.COLLABORATION_EXTENSION_ADDED, {
                     URL: extensionURL,
                     name: info.id

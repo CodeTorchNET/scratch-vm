@@ -245,7 +245,7 @@ class VirtualMachine extends EventEmitter {
 
         // Load core extensions
         for (const id of CORE_EXTENSIONS) {
-            this.extensionManager.loadExtensionIdSync(id);
+            this.extensionManager.loadExtensionIdSync(id, {}, false);
         }
 
         this.blockListener = this.blockListener.bind(this);
@@ -1554,7 +1554,7 @@ class VirtualMachine extends EventEmitter {
                     const currTarget = allTargets[i];
                     currTarget.blocks.updateAssetName(
                         oldName,
-                        newName,
+                        newUnusedName,
                         'sprite',
                         currTarget.originalTargetId
                     );
@@ -1649,6 +1649,7 @@ class VirtualMachine extends EventEmitter {
             this.runtime.addTarget(newTarget);
             newTarget.goBehindOther(target);
             this.setEditingTarget(newTarget.id);
+            this.emit('ADD_SPRITE');
         });
     }
 
@@ -1932,9 +1933,15 @@ class VirtualMachine extends EventEmitter {
                 } else {
                     target.blocks.createBlock(block);
                 }
-                
+
             });
             target.blocks.updateTargetSpecificBlocks(target.isStage);
+            const finalBlocks = copiedBlocks
+                .map(block => target.blocks.getBlock(block.id))
+                .filter(Boolean);
+            if (finalBlocks.length) {
+                this.runtime.emitTargetBlocksChanged(targetId, ['add', finalBlocks]);
+            }
         });
     }
 
@@ -1982,10 +1989,10 @@ class VirtualMachine extends EventEmitter {
             copiedBlocks.forEach(block => {
                 target.blocks.createBlock(block);
             });
+            target.blocks.updateTargetSpecificBlocks(target.isStage);
             if (copiedBlocks.length) {
                 this.runtime.emitTargetBlocksChanged(targetId, ['add', copiedBlocks]);
             }
-            target.blocks.updateTargetSpecificBlocks(target.isStage);
         });
     }
 
