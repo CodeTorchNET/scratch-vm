@@ -22,3 +22,22 @@ test('collectAssets', t => {
     t.deepEqual(assets, [soundAsset1, soundAsset2, costumeAsset1]);
     t.end();
 });
+
+test('collectAssets skips a costume whose bytes never arrived', t => {
+    const vm = new VirtualMachine();
+    const sprite = new Sprite(null, vm.runtime);
+    const target = new RenderedTarget(sprite, vm.runtime);
+    vm.runtime.targets = [target];
+    const [soundAsset, costumeAsset] = [{assetId: 1}, {assetId: 2}];
+    sprite.sounds = [{id: 1, asset: soundAsset}];
+    sprite.costumes = [
+        {id: 1, asset: costumeAsset},
+        {id: 2, name: 'bytesNeverCame', md5ext: 'deadbeef.png'}
+    ];
+
+    const assets = vm.assets;
+    t.equal(assets.length, 2);
+    t.deepEqual(assets, [soundAsset, costumeAsset]);
+    t.doesNotThrow(() => assets.filter(asset => !asset.clean));
+    t.end();
+});

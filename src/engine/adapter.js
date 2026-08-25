@@ -77,9 +77,11 @@ const domToBlock = function (blockDOM, blocks, isTopBlock, parent) {
             }
             block.fields[fieldName] = {
                 name: fieldName,
-                id: fieldId,
                 value: fieldData
             };
+            if (typeof fieldId !== 'undefined') {
+                block.fields[fieldName].id = fieldId;
+            }
             const fieldVarType = xmlChild.attribs.variabletype;
             if (typeof fieldVarType === 'string') {
                 block.fields[fieldName].variableType = fieldVarType;

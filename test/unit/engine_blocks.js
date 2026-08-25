@@ -1038,3 +1038,158 @@ test('getAllVariableAndListReferences returns broadcast when we tell it to', t =
 
     t.end();
 });
+
+test('validateAndRepair detaches a block whose parent does not hold it', t => {
+    const b = new Blocks(new Runtime());
+    b.createBlock({
+        id: 'loop',
+        opcode: 'control_forever',
+        next: null,
+        parent: null,
+        inputs: {SUBSTACK: {name: 'SUBSTACK', block: 'winner', shadow: null}},
+        fields: {},
+        topLevel: true,
+        shadow: false
+    });
+    b.createBlock({
+        id: 'winner',
+        opcode: 'motion_movesteps',
+        next: null,
+        parent: 'loop',
+        inputs: {},
+        fields: {},
+        topLevel: false,
+        shadow: false
+    });
+    b.createBlock({
+        id: 'loser',
+        opcode: 'looks_changesizeby',
+        next: null,
+        parent: 'loop',
+        inputs: {},
+        fields: {},
+        topLevel: false,
+        shadow: false
+    });
+    // createBlock lists top-level blocks as scripts; the loser is not one yet.
+    t.equal(b._scripts.indexOf('loser'), -1);
+
+    const repaired = new Map();
+    const repairs = b.validateAndRepair(repaired);
+
+    t.ok(repairs > 0, 'the graph needed repairing');
+    t.equal(b._blocks.loser.parent, null, 'the loser is detached');
+    t.equal(b._blocks.loser.topLevel, true, 'and becomes a script of its own');
+    t.ok(b._scripts.indexOf('loser') > -1, 'and is listed as one');
+    t.ok(repaired.has('loser'), 'the correction is reported so it can be published');
+
+    // The block that did win the slot is untouched.
+    t.equal(b._blocks.winner.parent, 'loop');
+    t.equal(b._blocks.winner.topLevel, false);
+    t.equal(b._blocks.loop.inputs.SUBSTACK.block, 'winner');
+    t.end();
+});
+
+test('validateAndRepair leaves a block its parent really does hold', t => {
+    const b = new Blocks(new Runtime());
+    b.createBlock({
+        id: 'loop',
+        opcode: 'control_forever',
+        next: null,
+        parent: null,
+        inputs: {SUBSTACK: {name: 'SUBSTACK', block: 'child', shadow: null}},
+        fields: {},
+        topLevel: true,
+        shadow: false
+    });
+    b.createBlock({
+        id: 'child',
+        opcode: 'motion_movesteps',
+        next: 'after',
+        parent: 'loop',
+        inputs: {},
+        fields: {},
+        topLevel: false,
+        shadow: false
+    });
+    // Held through `next` rather than through an input, which is the other way to be attached.
+    b.createBlock({
+        id: 'after',
+        opcode: 'looks_changesizeby',
+        next: null,
+        parent: 'child',
+        inputs: {},
+        fields: {},
+        topLevel: false,
+        shadow: false
+    });
+
+    t.equal(b.validateAndRepair(new Map()), 0, 'nothing to repair');
+    t.equal(b._blocks.child.parent, 'loop');
+    t.equal(b._blocks.after.parent, 'child');
+    t.end();
+});
+
+test('deleteBlock takes the block\'s comment with it', t => {
+    const runtime = new Runtime();
+    const target = {
+        id: 'sprite1',
+        originalTargetId: 'sprite1',
+        comments: {
+            note: {id: 'note', blockId: 'loop', text: 'about this loop'}
+        }
+    };
+    runtime.targets.push(target);
+
+    const b = new Blocks(runtime);
+    b.createBlock({
+        id: 'loop',
+        opcode: 'control_forever',
+        next: null,
+        parent: null,
+        inputs: {},
+        fields: {},
+        topLevel: true,
+        shadow: false,
+        comment: 'note'
+    });
+
+    const said = [];
+    runtime.on('TARGET_COMMENTS_CHANGED', (targetId, data) => said.push([targetId, data]));
+    b.deleteBlock('loop', {targetId: 'sprite1', source: 'default'});
+
+    t.equal(b._blocks.loop, undefined, 'the block is gone');
+    t.equal(target.comments.note, undefined, 'and so is its comment');
+    t.same(said, [['sprite1', ['delete', 'note']]], 'and the room is told, so it goes too');
+    t.end();
+});
+
+test('deleteBlock leaves comments that belong to other blocks alone', t => {
+    const runtime = new Runtime();
+    const target = {
+        id: 'sprite1',
+        originalTargetId: 'sprite1',
+        comments: {
+            elsewhere: {id: 'elsewhere', blockId: 'other', text: 'not about this'},
+            floating: {id: 'floating', blockId: null, text: 'on the canvas'}
+        }
+    };
+    runtime.targets.push(target);
+
+    const b = new Blocks(runtime);
+    b.createBlock({
+        id: 'loop',
+        opcode: 'control_forever',
+        next: null,
+        parent: null,
+        inputs: {},
+        fields: {},
+        topLevel: true,
+        shadow: false
+    });
+    b.deleteBlock('loop', {targetId: 'sprite1', source: 'default'});
+
+    t.ok(target.comments.elsewhere, 'another block\'s comment is untouched');
+    t.ok(target.comments.floating, 'and so is one that belongs to no block');
+    t.end();
+});

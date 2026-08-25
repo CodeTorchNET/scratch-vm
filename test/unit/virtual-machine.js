@@ -476,22 +476,23 @@ test('reorderTarget', t => {
     const vm = new VirtualMachine();
     vm.emitTargetsUpdate = () => {};
 
-    vm.runtime.targets = ['a', 'b', 'c', 'd'];
+    const order = () => vm.runtime.targets.map(target => target.id);
+    vm.runtime.targets = ['a', 'b', 'c', 'd'].map(id => ({id, isOriginal: true}));
 
     t.equal(vm.reorderTarget(2, 2), false);
-    t.deepEqual(vm.runtime.targets, ['a', 'b', 'c', 'd']);
+    t.deepEqual(order(), ['a', 'b', 'c', 'd']);
 
     // Make sure clamping works
     t.equal(vm.reorderTarget(-100, -5), false);
-    t.deepEqual(vm.runtime.targets, ['a', 'b', 'c', 'd']);
+    t.deepEqual(order(), ['a', 'b', 'c', 'd']);
 
     // Reorder upwards
     t.equal(vm.reorderTarget(0, 2), true);
-    t.deepEqual(vm.runtime.targets, ['b', 'c', 'a', 'd']);
+    t.deepEqual(order(), ['b', 'c', 'a', 'd']);
 
     // Reorder downwards
     t.equal(vm.reorderTarget(3, 1), true);
-    t.deepEqual(vm.runtime.targets, ['b', 'd', 'c', 'a']);
+    t.deepEqual(order(), ['b', 'd', 'c', 'a']);
 
     t.end();
 });

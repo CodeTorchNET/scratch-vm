@@ -759,7 +759,7 @@ class VirtualMachine extends EventEmitter {
         return [
             ...costumesAndSounds,
             ...fonts
-        ];
+        ].filter(Boolean);
     }
 
     /**
@@ -1529,7 +1529,7 @@ class VirtualMachine extends EventEmitter {
      * @param {string} newName New name of the sprite.
      * @param {boolean} [sendNameChangedEvent = true] whether to send an event when the sprite name changes.
      */
-    renameSprite (targetId, newName, sendNameChangedEvent = true) {
+    renameSprite (targetId, newName, sendNameChangedEvent = true, authoritative = false) {
         const target = this.runtime.getTargetById(targetId);
         if (target) {
             if (!target.isSprite()) {
@@ -1544,7 +1544,7 @@ class VirtualMachine extends EventEmitter {
                     .filter(runtimeTarget => runtimeTarget.isSprite() && runtimeTarget.id !== target.id)
                     .map(runtimeTarget => runtimeTarget.sprite.name);
                 const oldName = sprite.name;
-                const newUnusedName = StringUtil.unusedName(newName, names);
+                const newUnusedName = authoritative ? newName : StringUtil.unusedName(newName, names);
                 sprite.name = newUnusedName;
                 if (oldName === newUnusedName) {
                     return;
@@ -1970,6 +1970,7 @@ class VirtualMachine extends EventEmitter {
         const {blocks: copiedBlocks, extensionURLs} = sb3.deserializeStandaloneBlocks(blocks);
         newBlockIds(copiedBlocks);
         const target = this.runtime.getTargetById(targetId);
+        if (!target) return Promise.resolve();
 
         if (optFromTargetId) {
             // If the blocks are being shared from another target,
@@ -1986,6 +1987,7 @@ class VirtualMachine extends EventEmitter {
         );
 
         return this._loadExtensions(extensionIDs, extensionURLs).then(() => {
+            if (!this.runtime.getTargetById(targetId)) return;
             copiedBlocks.forEach(block => {
                 target.blocks.createBlock(block);
             });
@@ -2211,8 +2213,11 @@ class VirtualMachine extends EventEmitter {
             );
 
             if (reorderSuccessful) {
-                const newSelectedContextIndex = target.getCostumeIndexByName(oldCurrentCostumeObject.name);
-                target.currentCostume = newSelectedContextIndex;
+                const newSelectedContextIndex = oldCurrentCostumeObject ?
+                    target.getCostumeIndexByName(oldCurrentCostumeObject.name) : -1;
+                if (newSelectedContextIndex >= 0) {
+                    target.currentCostume = newSelectedContextIndex;
+                }
 
                 this.runtime.emitTargetSimplePropertyChanged([
                     [target.id, {currentCostume: target.currentCostume}]

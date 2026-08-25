@@ -782,6 +782,14 @@ class Blocks {
                 // The selected item in the sensing of block menu needs to change based on the
                 // selected target.  Set it to the first item in the menu list.
                 // TODO: (#1787)
+
+                // A shadow can outlive its parent: a remote delete or an out-of-order merge
+                // leaves `parent` naming a block that is no longer in the container, and the
+                // graph is only tidied on the next full refresh. Resolve the parent once and
+                // treat a missing one as nothing to update, rather than throwing out of
+                // blocklyListen and aborting Blockly's event dispatch for the whole gesture.
+                const parentBlock = block.parent ? this._blocks[block.parent] : null;
+
                 if (block.opcode === 'sensing_of_object_menu') {
                     let newValue = '';
                     if (block.fields.OBJECT.value === '_stage_') {
@@ -789,15 +797,17 @@ class Blocks {
                     } else {
                         newValue = 'x position';
                     }
-                    const _field = this._blocks[block.parent].fields.PROPERTY;
-                    _field.value = newValue;
+                    const _field = parentBlock && parentBlock.fields && parentBlock.fields.PROPERTY;
+                    if (_field) {
+                        _field.value = newValue;
 
-                    // eslint-disable-next-line max-len
-                    changedBlockRecorder.set(block.parent, {[JSON.stringify(['fields', 'PROPERTY', 'value'])]: _field.value});
-                    this.runtime.requestBlocksUpdate();
+                        // eslint-disable-next-line max-len
+                        changedBlockRecorder.set(block.parent, {[JSON.stringify(['fields', 'PROPERTY', 'value'])]: _field.value});
+                        this.runtime.requestBlocksUpdate();
+                    }
                 }
 
-                const flyoutBlock = block.shadow && block.parent ? this._blocks[block.parent] : block;
+                const flyoutBlock = block.shadow && parentBlock ? parentBlock : block;
                 if (flyoutBlock.isMonitored) {
                     this.runtime.requestUpdateMonitor({
                         id: flyoutBlock.id,
@@ -937,13 +947,13 @@ class Blocks {
 
         // Remove from any old parent.
         if (typeof e.oldParent !== 'undefined') {
-            const oldParent = this._blocks[e.oldParent];
-            if (typeof e.oldInput !== 'undefined' && oldParent.inputs[e.oldInput] &&
+            const oldParent = this._blocks[e.oldParent] || null;
+            if (oldParent && typeof e.oldInput !== 'undefined' && oldParent.inputs[e.oldInput] &&
                 oldParent.inputs[e.oldInput].block === e.id) {
                 // This block was connected to the old parent's input.
                 oldParent.inputs[e.oldInput].block = null;
                 changedBlockRecorder.set(e.oldParent, {[JSON.stringify(['inputs', e.oldInput, 'block'])]: null});
-            } else if (oldParent.next === e.id) {
+            } else if (oldParent && oldParent.next === e.id) {
                 // This block was connected to the old parent's next connection.
                 oldParent.next = null;
                 changedBlockRecorder.set(e.oldParent, {next: null});
@@ -954,17 +964,22 @@ class Blocks {
         }
 
         // Is this block a top-level block?
-        if (typeof e.newParent === 'undefined') {
-            if (e.oldParent) {
+        const newParent = typeof e.newParent === 'undefined' ? null : this._blocks[e.newParent];
+        // eslint-disable-next-line no-negated-condition
+        if (!newParent) {
+            if (e.oldParent || typeof e.newParent !== 'undefined') {
                 this._addScript(e.id);
                 changedBlockRecorder.set(e.id, {topLevel: true});
+                if (typeof e.newParent !== 'undefined') {
+                    this._blocks[e.id].parent = null;
+                    changedBlockRecorder.set(e.id, {parent: null});
+                    didChange = true;
+                }
             }
         } else {
             // Remove script, if one exists.
             this._deleteScript(e.id);
-            if (e.oldParent !== e.newParent) {
-                changedBlockRecorder.set(e.id, {topLevel: false, parent: e.newParent});
-            }
+            changedBlockRecorder.set(e.id, {topLevel: false, parent: e.newParent});
 
             // Otherwise, try to connect it in its new place.
             if (typeof e.newInput === 'undefined') {
@@ -1038,6 +1053,16 @@ class Blocks {
      * Block management: delete blocks and their associated scripts. Does nothing if a block
      * with the given ID does not exist.
      * @param {!string} blockId Id of block to delete
+     * @param {object} [params] Optional parameters.
+     * @param {string} [params.source] When 'default', publish the deletion as a change event.
+     * @param {string} [params.targetId] Target the deletion belongs to, for the change event.
+     * @param {boolean} [params.cascade] When false, delete only this block and promote its
+     *   surviving children to top level instead of recursing into them. Used when applying a
+     *   remote collaborator's deletion, where the cascade was already computed against *their*
+     *   tree and published id by id (re-deriving it locally would take blocks they never
+     *   listed, which another collaborator may have attached in the meantime)
+     * @return {Array<string>} ids of blocks that were promoted to top level (only non-empty
+     *   when params.cascade is false).
      */
     deleteBlock (blockId, params = {}) {
         // @todo In runtime, stop threads running on this script.
@@ -1046,24 +1071,60 @@ class Blocks {
         const block = this._blocks[blockId];
         if (!block) {
             // No block with the given ID exists
-            return;
+            return [];
         }
 
-        // Delete children
-        if (block.next !== null) {
-            this.deleteBlock(block.next, params);
-        }
+        const cascade = params.cascade !== false;
+        const promoted = [];
 
-        // Delete inputs (including branches)
-        for (const input in block.inputs) {
-            // If it's null, the block in this input moved away.
-            if (block.inputs[input].block !== null) {
-                this.deleteBlock(block.inputs[input].block, params);
+        if (cascade) {
+            // Delete children
+            if (block.next !== null) {
+                this.deleteBlock(block.next, params);
             }
-            // Delete obscured shadow blocks.
-            if (block.inputs[input].shadow !== null &&
-                block.inputs[input].shadow !== block.inputs[input].block) {
-                this.deleteBlock(block.inputs[input].shadow, params);
+
+            // Delete inputs (including branches)
+            for (const input in block.inputs) {
+                // If it's null, the block in this input moved away.
+                if (block.inputs[input].block !== null) {
+                    this.deleteBlock(block.inputs[input].block, params);
+                }
+                // Delete obscured shadow blocks.
+                if (block.inputs[input].shadow !== null &&
+                    block.inputs[input].shadow !== block.inputs[input].block) {
+                    this.deleteBlock(block.inputs[input].shadow, params);
+                }
+            }
+        } else {
+            // Detach this block from its parent so the parent is not left pointing at it.
+            const parent = block.parent === null ? null : this._blocks[block.parent];
+            if (parent) {
+                if (parent.next === blockId) parent.next = null;
+                for (const input in parent.inputs) {
+                    if (parent.inputs[input].block === blockId) parent.inputs[input].block = null;
+                    if (parent.inputs[input].shadow === blockId) parent.inputs[input].shadow = null;
+                }
+            }
+
+            // Promote surviving children to top level rather than deleting them.
+            const children = [];
+            if (block.next !== null && typeof block.next !== 'undefined') children.push(block.next);
+            for (const input in block.inputs) {
+                if (block.inputs[input].block !== null) children.push(block.inputs[input].block);
+                if (block.inputs[input].shadow !== null &&
+                    block.inputs[input].shadow !== block.inputs[input].block) {
+                    children.push(block.inputs[input].shadow);
+                }
+            }
+            for (const childId of children) {
+                const child = this._blocks[childId];
+                if (!child) continue;
+                if (child.shadow) {
+                    continue;
+                }
+                child.parent = null;
+                this._addScript(childId);
+                promoted.push(childId);
             }
         }
 
@@ -1073,12 +1134,27 @@ class Blocks {
         // Delete block itself.
         delete this._blocks[blockId];
 
+        // And its comment
+        if (block.comment && params.targetId) {
+            const target = this.runtime.getTargetById(params.targetId);
+            if (target && target.comments[block.comment]) {
+                const commentId = block.comment;
+                delete target.comments[commentId];
+                if (params.source === 'default') {
+                    this.runtime.emitTargetCommentsChanged(
+                        target.originalTargetId, ['delete', commentId]);
+                }
+            }
+        }
+
         if (params.source === 'default') {
             this.runtime.emitTargetBlocksChanged(params.targetId, ['delete', blockId]);
         }
 
         this.resetCache();
         this.emitProjectChanged();
+
+        return promoted;
     }
 
     /**
@@ -1091,28 +1167,87 @@ class Blocks {
 
     /**
      * Verify every parent / next / inputs.*.block|shadow reference points to a
-     * block that exists in this container, and that no parent chain is cyclic.
-     * Dangling references are nulled and cycle-closing links detached, each with
-     * a console warning, so a corrupt graph degrades to a loadable one instead
-     * of throwing during XML rebuild. Used as a collaboration-sync safety net.
+     * block that exists in this container, that the two ends of every attachment
+     * agree with each other, and that no parent chain is cyclic. Dangling references
+     * are nulled, contradictory attachments reconciled and cycle-closing links
+     * detached, each with a console warning, so a corrupt graph degrades to a
+     * loadable one instead of throwing during XML rebuild or silently exporting the
+     * same block twice. Used as a collaboration-sync safety net.
+     * @param {Map<string,?Set<string>>} [optRepaired] When provided, records what was
+     *   rewritten, so a caller can publish the corrections instead of
+     *   silently diverging from the shared document.
      * @return {number} number of repairs performed (0 = graph was consistent)
      */
-    validateAndRepair () {
+    validateAndRepair (optRepaired) {
         let repairs = 0;
         const blocks = this._blocks;
+        const noteRepair = (id, ...props) => {
+            if (!optRepaired) return;
+            if (props.length === 0) {
+                optRepaired.set(id, null); // whole record: the block is gone
+                return;
+            }
+            const existing = optRepaired.get(id);
+            if (existing === null) return; // already gone; nothing finer to say
+            const set = existing || new Set();
+            props.forEach(prop => set.add(prop));
+            optRepaired.set(id, set);
+        };
+        const inputProp = (inputName, which) => JSON.stringify(['inputs', inputName, which]);
+
+        const claimedBy = new Map();
+        const claim = (childId, parentId) => {
+            if (childId === null || typeof childId === 'undefined') return;
+            if (childId === parentId || claimedBy.has(childId)) return;
+            claimedBy.set(childId, parentId);
+        };
+        for (const blockId in blocks) {
+            const block = blocks[blockId];
+            claim(block.next, blockId);
+            for (const inputName in block.inputs) {
+                const input = block.inputs[inputName];
+                claim(input.block, blockId);
+                claim(input.shadow, blockId);
+            }
+        }
 
         for (const blockId in blocks) {
             const block = blocks[blockId];
             if (block.parent !== null && typeof block.parent !== 'undefined' && !blocks[block.parent]) {
-                log.warn(`Block graph repair: ${blockId} has dangling parent ${block.parent}; detaching.`);
-                block.parent = null;
-                block.topLevel = true;
-                this._addScript(blockId);
+                const claimantId = claimedBy.get(blockId);
+                if (claimantId && blocks[claimantId]) {
+                    // The claimant is the more trustworthy record
+                    log.warn(
+                        `Block graph repair: ${blockId} has dangling parent ${block.parent}; ` +
+                        `reattaching to ${claimantId}, which still claims it.`);
+                    block.parent = claimantId;
+                    block.topLevel = false;
+                    this._deleteScript(blockId);
+                    // Only this block's record changed. The claimant was already right.
+                    noteRepair(blockId, 'parent', 'topLevel');
+                } else if (block.shadow) {
+                    // A shadow belongs to the slot it fills
+                    log.warn(
+                        `Block graph repair: shadow ${blockId} has dangling parent ${block.parent} ` +
+                        `and nothing claims it; deleting.`);
+                    this._deleteScript(blockId);
+                    delete blocks[blockId];
+                    noteRepair(blockId);
+                    repairs++;
+                    continue; // nothing left to check on a record that is gone
+                } else {
+                    log.warn(`Block graph repair: ${blockId} has dangling parent ${block.parent}; detaching.`);
+                    block.parent = null;
+                    block.topLevel = true;
+                    this._addScript(blockId);
+                    noteRepair(blockId, 'parent', 'topLevel');
+                }
                 repairs++;
             }
             if (block.next !== null && typeof block.next !== 'undefined' && !blocks[block.next]) {
                 log.warn(`Block graph repair: ${blockId} has dangling next ${block.next}; clearing.`);
                 block.next = null;
+                noteRepair(blockId, 'next');
                 repairs++;
             }
             for (const inputName in block.inputs) {
@@ -1122,6 +1257,7 @@ class Blocks {
                         `Block graph repair: ${blockId} input ${inputName} ` +
                         `references missing block ${input.block}; clearing.`);
                     input.block = null;
+                    noteRepair(blockId, inputProp(inputName, 'block'));
                     repairs++;
                 }
                 if (input.shadow !== null && typeof input.shadow !== 'undefined' &&
@@ -1130,9 +1266,129 @@ class Blocks {
                         `Block graph repair: ${blockId} input ${inputName} ` +
                         `references missing shadow ${input.shadow}; clearing.`);
                     input.shadow = null;
+                    noteRepair(blockId, inputProp(inputName, 'shadow'));
                     repairs++;
                 }
             }
+        }
+
+        /*
+        A block can hang off exactly one connection. Concurrent editing makes that untrue
+        without either side being wrong (two people drag the same block to two different
+        places, and each one publishes "detach it from the parent I can see". The parent
+        neither of them could see keeps its `next`, so the document converges on a
+        contradiction). Every reference involved points at a block that exists, so nothing above
+        notices, and the project is saved and re-opened with the child exported twice: once as
+        the body of a script and once as a script of its own.
+        */
+        const claimsOn = new Map();
+        const addClaim = (childId, parentId, inputName) => {
+            if (!childId || childId === parentId || !blocks[childId]) return;
+            let list = claimsOn.get(childId);
+            if (!list) {
+                list = [];
+                claimsOn.set(childId, list);
+            }
+            if (!list.some(c => c.parentId === parentId && c.inputName === inputName)) {
+                list.push({parentId, inputName});
+            }
+        };
+        for (const blockId in blocks) {
+            const block = blocks[blockId];
+            addClaim(block.next, blockId, null);
+            for (const inputName in block.inputs) {
+                const input = block.inputs[inputName];
+                if (input.block && input.block !== input.shadow) {
+                    addClaim(input.block, blockId, inputName);
+                }
+            }
+        }
+
+        const dropClaim = (childId, claim) => {
+            const parent = blocks[claim.parentId];
+            if (!parent) return;
+            let changedProp;
+            if (claim.inputName === null) {
+                if (parent.next !== childId) return;
+                parent.next = null;
+                changedProp = 'next';
+            } else {
+                const input = parent.inputs[claim.inputName];
+                if (!input || input.block !== childId) return;
+                input.block = null;
+                changedProp = inputProp(claim.inputName, 'block');
+            }
+            log.warn(
+                `Block graph repair: ${claim.parentId} still claims ${childId}, ` +
+                `which hangs off ${blocks[childId].parent === null ? 'nothing' : blocks[childId].parent}; ` +
+                `clearing the stale claim.`);
+            noteRepair(claim.parentId, changedProp);
+            repairs++;
+        };
+
+        claimsOn.forEach((claims, childId) => {
+            const child = blocks[childId];
+            const parentId = (child.parent === null || typeof child.parent === 'undefined') ?
+                null : child.parent;
+            let keep = parentId === null ?
+                null : claims.find(c => c.parentId === parentId) || null;
+
+            if (!keep) {
+                const isLooseScript = parentId === null && child.topLevel === true &&
+                    this._scripts.indexOf(childId) > -1;
+                if (!isLooseScript) {
+                    keep = claims.reduce((a, b) => (b.parentId < a.parentId ? b : a));
+                    log.warn(
+                        `Block graph repair: ${childId} claims parent ${child.parent}, which does ` +
+                        `not hold it; reattaching to ${keep.parentId}, which does.`);
+                    child.parent = keep.parentId;
+                    this._deleteScript(childId);
+                    noteRepair(childId, 'parent', 'topLevel');
+                    repairs++;
+                }
+            } else if (child.topLevel === true || this._scripts.indexOf(childId) > -1) {
+                this._deleteScript(childId);
+                noteRepair(childId, 'topLevel');
+                repairs++;
+            }
+
+            claims.forEach(claim => {
+                if (keep && claim.parentId === keep.parentId && claim.inputName === keep.inputName) return;
+                dropClaim(childId, claim);
+            });
+        });
+
+        const holds = (parent, childId) => {
+            if (parent.next === childId) return true;
+            for (const inputName in parent.inputs) {
+                const input = parent.inputs[inputName];
+                if (input.block === childId || input.shadow === childId) return true;
+            }
+            return false;
+        };
+
+        for (const blockId in blocks) {
+            const block = blocks[blockId];
+            if (block.shadow) continue;
+
+            if (block.parent !== null && typeof block.parent !== 'undefined') {
+                const parent = blocks[block.parent];
+                if (!parent || holds(parent, blockId)) continue;
+                log.warn(
+                    `Block graph repair: ${blockId} says its parent is ${block.parent}, ` +
+                    `which does not hold it, and nothing else claims it; detaching.`);
+                block.parent = null;
+            } else if (block.topLevel === true && this._scripts.indexOf(blockId) > -1) {
+                continue;
+            } else {
+                log.warn(
+                    `Block graph repair: ${blockId} has no parent and is not a script; promoting.`);
+            }
+
+            block.topLevel = true;
+            this._addScript(blockId);
+            noteRepair(blockId, 'parent', 'topLevel');
+            repairs++;
         }
 
         for (const blockId in blocks) {
@@ -1143,12 +1399,22 @@ class Blocks {
                     // Parent chain loops back on itself: detach the block whose
                     // parent link closes the cycle so the chain terminates.
                     const offender = blocks[current];
-                    const parent = blocks[offender.parent];
+                    const parentId = offender.parent;
+                    const parent = blocks[parentId];
                     if (parent) {
-                        if (parent.next === current) parent.next = null;
+                        if (parent.next === current) {
+                            parent.next = null;
+                            noteRepair(parentId, 'next');
+                        }
                         for (const inputName in parent.inputs) {
-                            if (parent.inputs[inputName].block === current) parent.inputs[inputName].block = null;
-                            if (parent.inputs[inputName].shadow === current) parent.inputs[inputName].shadow = null;
+                            if (parent.inputs[inputName].block === current) {
+                                parent.inputs[inputName].block = null;
+                                noteRepair(parentId, inputProp(inputName, 'block'));
+                            }
+                            if (parent.inputs[inputName].shadow === current) {
+                                parent.inputs[inputName].shadow = null;
+                                noteRepair(parentId, inputProp(inputName, 'shadow'));
+                            }
                         }
                     }
                     log.warn(
@@ -1157,6 +1423,7 @@ class Blocks {
                     offender.parent = null;
                     offender.topLevel = true;
                     this._addScript(current);
+                    noteRepair(current, 'parent', 'topLevel');
                     repairs++;
                     break;
                 }
